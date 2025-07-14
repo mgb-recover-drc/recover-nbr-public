@@ -20,7 +20,7 @@ setwd(paste0(sbgenomics_path, "/project-files/code/"))
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
 
-bargs <- getArgs(defaults = list(dt = "20241205"))
+bargs <- getArgs(defaults = list(dt = "20250305"))
 
 # check for whether RDs objects already exist in this project's
 if(length(list.files(paste0("../DM/ped/", bargs$dt))) > 0) stop(glue("RDS objects already in existing project - delete RDS files from project-files/DM/ped/{bargs$dt}"))
@@ -34,7 +34,7 @@ pf_loc <- get_folder_path(fld_str = "project-files") # project-files folder loca
 data_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERPediatricMain_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricMain_REDCap_{dm_rt_dt}")
 data_loc_cg_partial <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERPediatricCaregiver_{dm_rt_dt_y}{dm_rt_dt_m}.1/")
 data_loc_cg_final_fol <- grep("PediatricCaregiver_REDCap", list.files(data_loc_cg_partial), value = T)
-data_loc_cg <- glue("{data_loc_cg_partial}{data_loc_cg_final_fol}")               
+data_loc_cg <- glue("{data_loc_cg_partial}{data_loc_cg_final_fol}")
 
 
 
@@ -71,6 +71,7 @@ repeated_rc_forms <- unique(read_csv(file.path(data_loc, repeat_forms_path)) %>%
 
 repeat_forms_path_cg <- list.files(data_loc_cg, pattern="RECOVER.*_repeatforms_.*.csv") 
 repeated_rc_forms_cg <- unique(read_csv(file.path(data_loc_cg, repeat_forms_path_cg)) %>% pull(form_name))
+
 
 # YA variable fix 
 
@@ -208,7 +209,8 @@ cg_promote <- formds_list$promote_to_followup %>%
             .by=enrl_cgid)
 
 vacc_baseline_cg <- formds_cg_list$covid_vaccine_history %>% 
-  filter(grepl("baseline", redcap_event_name))
+  filter(grepl("baseline", redcap_event_name)) %>%
+  select(-c(redcap_event_name, redcap_repeat_instance, redcap_repeat_instrument))
 
 # levels and labels for 'age_cat' variable ----
 cg_age_cat_levds <- tribble(                     
@@ -401,7 +403,8 @@ antibody_results <- formds_list$antibody_test_results %>%
                                is.na(pc_kit_date_time) ~ as.Date(atr_colldt))) %>% 
   distinct() %>% 
   arrange(record_id, sample_dt) %>% 
-  filter(sample_dt==min(sample_dt) , .by=record_id)
+  filter(sample_dt==min(sample_dt) , .by=record_id) %>%
+  select(-redcap_event_name)
 
 vacc_estdt_long <- formds_list$covid_vaccine_history %>%
   filter(redcap_event_name %in% c("week_8_arm_2", "baseline_arm_4")) %>%
@@ -431,6 +434,31 @@ vacc_estdt_wide <- vacc_estdt_long %>%
          vacc_dt_name=paste("vacc_dt", vacc_dose, sep="_", "imp")) %>%
   pivot_wider(id_cols="record_id", names_from="vacc_dt_name", values_from = "vacc_dt")
 
+ren_ds <- tribble(
+  ~redcap_event_name, ~evnt_short,
+  "enrollment_arm_1", "A0", 
+  "baseline_arm_4", "B0",
+  "baseline_arm_2", "B0",
+  "week_2_arm_2", "B2",
+  "week_4_arm_2", "B4",
+  "week_8_arm_2", "B8",
+  "6_month_arm_5", "T206",
+  "12_month_arm_5", "T212",
+  "24_month_arm_5", "T224",
+  "36_month_arm_5", "T236",
+  "48_month_arm_5", "T248",
+  "visit_1_arm_6", "T301",
+  "visit_2_arm_6", "T302",
+)
+
+curr_dag <- formds_list$visit_form %>% 
+  left_join(ren_ds,
+            by = join_by(redcap_event_name)) %>% 
+  arrange(record_id, evnt_short) %>% 
+  group_by(record_id) %>% 
+  fill(visit_dag) %>% 
+  summarise(dag_curr = substr(visit_dag[n()], 1, 4),
+            .groups="drop")
 
 # --------
 
@@ -450,10 +478,7 @@ core_base <- reduce(single_instance_form_datasets, \(df1, df2) left_join(df1, df
               select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)),
             by = "record_id") %>%
   left_join(formds_list$first_covid_infection_history %>%
-              select(-redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form), 
-            by = "record_id") %>%
-  left_join(formds_list$current_covid_infection_history %>% 
-              select(record_id, ccih_dt, ccih_covidyn), 
+              select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)), 
             by = "record_id") %>%
   left_join(formds_list$covid_symptoms %>% 
               filter(redcap_event_name %in% c("baseline_arm_2", "baseline_arm_4")) %>% 
@@ -469,15 +494,17 @@ core_base <- reduce(single_instance_form_datasets, \(df1, df2) left_join(df1, df
 # add additional variables to core
 core <- core_base %>%
   left_join(peds_baseline_any_ds, by = "record_id") %>% 
+  left_join(curr_dag, by = "record_id") %>%
   left_join(base_ab, by = join_by(record_id)) %>% 
   left_join(antibody_results, by = "record_id") %>%
+  fix_yeardt("fcih") %>% 
+  fix_yeardt("mrcih") %>% 
   left_join(formds_list$visit_form %>% 
               select(record_id, visit_agemoreal, visit_dt) %>% 
               filter(!na_or_blank(visit_agemoreal)) %>% 
               filter(row_number() == 1, .by = record_id), 
             by = join_by(record_id)) %>% 
-  mutate(site = str_sub(record_id, 4, 7),
-         enrl_dob = visit_dt - (visit_agemoreal * 30.4375)) %>% 
+  mutate(site = str_sub(record_id, 4, 7)) %>% 
   which_ms(ms_vrb_name = "demo_hisp", new_column_name = "hisp_origin", afmt_list = peds_afmts) %>%
   which_ms(ms_vrb_name = "enrl_spop", new_column_name = "spop", afmt_list = peds_afmts) %>%
   which_ms(ms_vrb_name = "demo_race", new_column_name = "race_cat", afmt_list = peds_afmts) %>%
@@ -492,6 +519,7 @@ core <- core_base %>%
          cohort = case_when(str_extract(record_id, "RP299") == "RP299" ~ "ABCD",
                             str_extract(record_id, "RP253") == "RP253" ~ "MUSIC",
                             .default = "Main"),
+         site_curr = coalesce(dag_curr, site),
          arm_num = case_when(
            enrl_arms %in% c("12", "1,2") ~ 2,
            enrl_arms %in% c("14", "1,4") ~ 4,
@@ -502,6 +530,8 @@ core <- core_base %>%
          dys_index_enroll = as.numeric(enrl_dt - enrl_infdt),
          age_enroll = round(as.numeric(enrl_dt - enrl_dob)/365.25, digits = 2),
          biosex_f = factor(biosex, levels = c(1, 0, 2), labels = c("Female", "Male", "Intersex")),
+         biosex_an = factor(case_when(biosex_f %in% "Male"~"Male",
+                                      biosex_f %in% c("Female", "Intersex")~"Female/Intersex"), levels=c("Male","Female/Intersex")),
          race2_na_flag = is.na(race_cat_c6),
          race2_1AI = tab_factor(demo_race___1, "American Indian or Alaska Native", race2_na_flag),
          race2_2AS = tab_factor(demo_race___2, "Asian", race2_na_flag),
@@ -513,16 +543,16 @@ core <- core_base %>%
          race2_7WH = tab_factor(pmin(1, demo_race___7 + demo_race___5), "White", race2_na_flag),
          race2_7WN = tab_factor(pmin(1, (-1 * (demo_race___4 - 1)) * (demo_race___7 + demo_race___5)), "White, Non-Hispanic", race2_na_flag),
          race2_15N = tab_factor(demo_race___15, "None of these fully describe me", race2_na_flag),
+         race_sum = rowSums(pick(matches("race___\\d")), na.rm = T),
+         race_unique_an = factor(case_when(race_sum == 1 & demo_race___3 == 1 ~ "Non-Hispanic Black",
+                                           race_sum == 1 & (demo_race___7 == 1 | demo_race___5 == 1) ~ "Non-Hispanic White",
+                                           race_sum == 2 & demo_race___7 == 1 & demo_race___5 == 1 ~ "Non-Hispanic White",
+                                           demo_race___4 == 1 ~ "Hispanic",
+                                           T ~ "Mixed race/Other/Missing"),
+                                 levels=c("Non-Hispanic White", "Non-Hispanic Black", "Hispanic", "Mixed race/Other/Missing")),
          vacc_yn_f = factor(vacc_yn, 0:1, c("Not Vaccinated", "Vaccinated")),
          ptf_promote_ag = (ptf_promote %in% 1 & ptf_agreed %!in% 0) | ptf_agreed %in% 1,
          arm_num_fu = ifelse(ptf_promote_ag, 5, NA),
-         #first covid inf dt
-         fcih_date = case_when(is.na(fcih_dty) ~ as.Date(NA),
-                               !is.na(fcih_dty) ~ as.Date(paste(ifelse(record_id %in% fcih_dty_query$record_id, paste("20",stri_sub(fcih_dty, -2), sep=""), fcih_dty), sprintf("%02d", as.numeric(fcih_dtm)), "01", sep="-"),  "%Y-%m-%d")),
-         #most recent covid inf dt
-         mrcih_date = case_when(study_grp == "Acute Infected" & ccih_dt %!in% NA ~ ccih_dt,
-                                is.na(mrcih_dty) ~ as.Date(NA),
-                                !is.na(mrcih_dty) ~ as.Date(paste(mrcih_dty, sprintf("%02d", as.numeric(mrcih_dtm)), "01", sep="-"),  "%Y-%m-%d")),
          #oldest recorded inf_dt
          inf_date = case_when(fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
                               #sometimes people have improbable vlaues for both enrl_inf_dt andd fcih_date
@@ -589,34 +619,40 @@ core <- core_base %>%
                                           age_ref < 12 ~ "2021-10-29",
                                           age_ref < 16 ~"2021-05-10",
                                           age_ref >= 16 ~ "2020-12-11")),
-         vacc_elig = case_when(infect_yn_f %in% "Infected" & (enrl_ref_dt - vacc_elig_dt) >= 14 ~ T,
-                               infect_yn_f %in% "Infected" & (enrl_ref_dt - vacc_elig_dt) < 14 ~ F),
+         vacc_elig = case_when(infect_yn_f %in% "Infected" & (index_date - vacc_elig_dt) >= 14 ~ T,
+                               infect_yn_f %in% "Infected" & (index_date - vacc_elig_dt) < 14 ~ F),
          vacc_dt_comp = case_when(vacc_2dose == F ~ vacc_dt_01_imp,
                                   vacc_2dose == T & vacc_3dose == F ~ vacc_dt_02_imp,
                                   vacc_2dose == T & vacc_3dose == T ~ vacc_dt_03_imp),
          vacc_enrl_status = case_when(vacc_elig == F ~ "Not eligible for vaccination",
                                       (vacc_yn == 0) ~ "Not vaccinated",
-                                      enrl_ref_dt - vacc_dt_comp >= 14 ~ "Fully vaccinated",
-                                      ((enrl_ref_dt - vacc_dt_comp) < 14) & ((enrl_ref_dt - vacc_dt_comp) >=0) ~ "Partially vaccinated",
-                                      vacc_ncomp == 1 & (enrl_ref_dt - vacc_dt_comp) < 0 ~ "Not vaccinated",
-                                      vacc_ncomp > 1 & (enrl_ref_dt - vacc_dt_comp) < 0 ~ "Partially vaccinated",
-                                      enrl_ref_dt - vacc_dt_01_imp < 0 ~"Not vaccinated",
+                                      index_date - vacc_dt_comp >= 14 ~ "Fully vaccinated",
+                                      ((index_date - vacc_dt_comp) < 14) & ((index_date - vacc_dt_comp) >=0) ~ "Partially vaccinated",
+                                      vacc_ncomp == 1 & (index_date - vacc_dt_comp) < 0 ~ "Not vaccinated",
+                                      vacc_ncomp > 1 & (index_date - vacc_dt_comp) < 0 ~ "Partially vaccinated",
+                                      index_date - vacc_dt_01_imp < 0 ~"Not vaccinated",
                                       vacc_ncomp <= vacc_num & is.na(vacc_dt_comp) ~ "Vaccinated but missing information",
-                                      (vacc_ncomp > vacc_num) & (enrl_ref_dt - vacc_dt_01_imp) < 0 ~"Not vaccinated",
-                                      (vacc_ncomp > vacc_num) &  (enrl_ref_dt - vacc_dt_01_imp) > 0 ~ "Partially vaccinated",
+                                      (vacc_ncomp > vacc_num) & (index_date - vacc_dt_01_imp) < 0 ~"Not vaccinated",
+                                      (vacc_ncomp > vacc_num) &  (index_date - vacc_dt_01_imp) > 0 ~ "Partially vaccinated",
                                       vacc_ncomp == 2 & (vacc_ncomp > vacc_num) &  is.na(vacc_dt_01_imp) ~ "Vaccinated but missing information",
                                       vacc_ncomp == 3 & (vacc_ncomp > vacc_num) &  is.na(vacc_dt_02_imp) ~ "Vaccinated but missing information",
                                       is.na(vacc_num)| is.na(vacc_type_01) & vacc_yn == 1 ~ "Vaccinated but missing information",
                                       (is.na(vacc_2dose)) & vacc_yn == 1 ~ "Vaccinated but missing information",
                                       vacc_yn == 1 & is.na(vacc_ncomp) ~ "Vaccinated but missing information",
-                                      vacc_yn == 1 & is.na(enrl_ref_dt) ~ "Vaccinated but missing information",
+                                      vacc_yn == 1 & is.na(index_date) ~ "Vaccinated but missing information",
                                       vacc_yn < 0 ~ "Unknown",
                                       is.na(vacc_yn) ~ "Unknown"),
-         enrl_cgrel_f = factor(id_cgrel, c(1:12, 99), c("Mother", rep("Other Caregiver (i.e, Father, Grandparent, Other Guardian", 12)))) %>%
+         enrl_reftype_f = peds_afmts$enrl_reftype(enrl_reftype),
+         enrl_reftype_f2 = factor(case_when(str_detect(enrl_reftype_f, "^Other") ~ "Other", T ~ enrl_reftype_f),
+                                  levels = c("Community outreach", "Public health department list","Community health center","Participant tested/treated in the health system",     
+                                             "Existing, prospectively-followed COVID cohort", "Existing non-COVID research or clinical cohort", "Long COVID clinic",                         
+                                             "Self-referral from RECOVER website or other unsolicited self-referral", "Other")),
+         enrl_spop_3 = factor(enrl_spop___3, c(1, 0), c("Yes", "No")),
+         enrl_spop_2 = factor(enrl_spop___2, c(1, 0), c("Yes", "No"))) %>%
   left_join(core_cg %>% 
-              select(enrl_cgid = record_id) %>%
+              select(enrl_cgid = record_id) %>% 
               mutate(has_maincg = T), 
-            by = "enrl_cgid") %>%
+            by = "enrl_cgid") %>% 
   mutate(has_maincg = case_when(is.na(has_maincg) ~ F,
                                 .default = T))
 
@@ -815,6 +851,13 @@ symps_peds_short <- tribble(
 
 score_tab = tribble(
   ~lasso_symps      , ~score , ~age_strata                      ,
+  'ps_lowapp'       , 5.0    , 'Ages 0 - 2 (Infant)'            ,
+  'ps_insomnia'     , 3.5    , 'Ages 0 - 2 (Infant)'            ,
+  'ps_wetcough'     , 3.5    , 'Ages 0 - 2 (Infant)'            ,
+  'ps_drycough'     , 3.0    , 'Ages 0 - 2 (Infant)'            ,
+  'ps_runnynose'    , 0.5    , 'Ages 0 - 2 (Infant)'            ,
+  'ps_tired'        , 6.5    , 'Ages 3 - 5 (Preschoolers)'      ,
+  'ps_drycough'     , 3.0    , 'Ages 3 - 5 (Preschoolers)'      ,
   'ps_brainfog'     , 5.5    , 'Ages 6 - 11 (Middle Childhood)' ,
   'ps_backneckpain' , 5      , 'Ages 6 - 11 (Middle Childhood)' ,
   'ps_cramp'        , 5      , 'Ages 6 - 11 (Middle Childhood)' ,
@@ -844,14 +887,12 @@ mens_age_restriction <- str_extract(paste0(mens_age$age_restriction, collapse = 
                                     "[:space:]visit\\_age[:space:]>=\\d") #lowest possible age for period
 
 peds_core_symps <- ds_dd %>%
-  select(vr.name, matrix.group.name, field.label, branching.logic) %>%
-  filter(grepl("ps_|psfu", matrix.group.name),
-         grepl("pilt|pnlt|lt|a84|curr", matrix.group.name)) %>%
-  mutate(age_restriction = case_when(str_detect(matrix.group.name, "ps_mens") ~ mens_age_restriction,
-                                     str_detect(matrix.group.name, "psfu_mens") ~ mens_age_restriction,
-                                     T ~ gsub("\\[|\\]|\\(|\\)", " ", str_extract(branching.logic, "\\[visit\\_age\\].+"))),
-         prefix = gsub("\\_$", "", str_extract(matrix.group.name, ".+[^a84|pilt|pnlt|curr]")),
-         var_nm = gsub("\\_$", "", str_extract(vr.name, ".+[^a84|pilt|pnlt|curr]")),
+  filter((grepl("ps_|psfu", matrix.group.name) & grepl("pilt|pnlt|lt|a84|curr", matrix.group.name)) | 
+           grepl("musicul", vr.name) & field.type != "descriptive") %>% 
+  mutate(age_restriction = case_when(str_detect(vr.name, "period") ~ mens_age_restriction,
+                                     T ~ gsub("\\[|\\]|\\(|\\)", " ", str_extract(branching.logic, "\\[visit\\_age\\].+"))), # not sure how to handle MUSIC for this
+         prefix = gsub("\\_$", "", str_extract(matrix.group.name, ".+[^a84|pilt|pnlt|curr]")), # not sure how to handle MUSIC for this - no matrix.group.name in dd
+         var_nm = gsub("\\_$", "", str_extract(vr.name, ".+[^a84|pilt|pnlt|curr|musicul]")),
          final_nm=paste("ps_",gsub('^.*\\_', '', var_nm),sep=""),
          age_code = gsub("and ", "&", age_restriction),
          age_code_neg = ifelse(is.na(age_code), age_code, paste0("!(", age_code, ")")),
@@ -861,7 +902,7 @@ peds_core_symps <- ds_dd %>%
          field.label = ifelse(age_code %in% NA, field.label, paste0(field.label, "\n\nEligible if", age_readable)),
          age_min = as.numeric(gsub(".+>= ?(\\d+)?.*", "\\1", age_restriction)),
          age_max = as.numeric(gsub(".+< ?(\\d+)?.*", "\\1", age_restriction))) %>%
-  left_join(symps_peds_short %>% select(-prefix), by = join_by("final_nm"=="var_nm")) %>%
+  left_join(symps_peds_short %>% select(-prefix), by = join_by("final_nm"=="var_nm"))%>%
   mutate(Symptoms = ifelse(age_readable %in% NA, short_nm, paste0(short_nm, " (Eligible if", age_readable, ")"))) %>%
   select(-age_restriction, -branching.logic, -add_space_equal, -add_space) %>%
   mutate(lasso_symps = case_when(final_nm %in% c("ps_sleepy", "ps_lowenergy", "ps_tiredday") ~ "ps_tired",
@@ -874,21 +915,48 @@ peds_core_symps <- ds_dd %>%
                                  final_nm %in% c("ps_painneck", "ps_painback") ~ "ps_backneckpain",
                                  final_nm %in% c("ps_sore", "ps_painjoint", "ps_painache") ~ "ps_bodypain",
                                  final_nm %in% c("ps_concentrate", "ps_memory") ~ "ps_brainfog",
+                                 final_nm %in% c("ps_skincolor", "ps_digitcolor")~"ps_color",
+                                 final_nm %in% c("ps_nightmares", "ps_nightterror")~"ps_night",
+                                 final_nm %in% c("ps_agressive",  "ps_liesteal")~"ps_serious",
+                                 final_nm %in% c("ps_tantrums", "ps_hyperactive", "ps_rulebreak")~"ps_behavior", 
+                                 final_nm %in% c("ps_fearsep", "ps_fearpeople", "ps_phobia")~"ps_fear",
                                  T ~ final_nm),
-         lasso_names = case_when(lasso_symps %in% "ps_tired" ~ "Daytime tiredness/sleepiness or low energy (Eligible if  Age >= 3)",
-                                 lasso_symps %in% "ps_eye" ~ "Watery or red eyes",
-                                 lasso_symps %in% "ps_senses" ~ "Change or loss in smell or taste (Eligible if  Age >= 3)",
-                                 lasso_symps %in% "ps_movement" ~ "Trouble with walking, running or stairs (Eligible if  Age >= 2)",
-                                 lasso_symps %in% "ps_lightheaded" ~ "Feeling lightheaded or dizzy (Eligible if  Age >= 6)",
-                                 lasso_symps %in% "ps_nauseous" ~ "Nausea or Vomiting",
-                                 lasso_symps %in% "ps_skin" ~ "Itchy skin or skin rash",
-                                 lasso_symps %in% "ps_backneckpain" ~ "Back or neck pain (Eligible if  Age >= 3)",
-                                 lasso_symps %in% "ps_bodypain" ~ "Body, muscle, or joint pain (Eligible if  Age >= 3)",
-                                 lasso_symps %in% "ps_brainfog" ~ "Trouble with memory or focusing (Eligible if  Age >= 3)",
-                                 T ~ Symptoms))
+         music_symp=grepl("musicul",vr.name)) %>% 
+  mutate(grp_min_age=min(age_min),
+         grp_min_age=case_when(lasso_symps %in% c("ps_color","ps_night","ps_serious",
+                                                  "ps_behavior", "ps_fear")~0,
+                               T~grp_min_age),
+         grp_max_age=max(age_max),
+         grp_max_age=case_when(lasso_symps %in% c("ps_color","ps_night","ps_serious",
+                                                  "ps_behavior", "ps_fear")~6,
+                               T~grp_max_age), .by=c("lasso_symps","music_symp")) %>% 
+  group_by(lasso_symps) %>% 
+  fill(grp_max_age, .direction = "downup") %>% 
+  fill(grp_min_age, .direction = "downup") %>% 
+  ungroup() %>% 
+  mutate(grp_age_code=case_when(is.na(grp_max_age) & is.na(grp_min_age)~NA,
+                                !is.na(grp_min_age) & is.na(grp_max_age)~glue("Age >= {grp_min_age}"),
+                                !is.na(grp_min_age) & !is.na(grp_max_age)~ glue("Age >= {grp_min_age} & Age < {grp_max_age}"),
+                                T~NA),
+         grp_age_code_neg=ifelse(is.na(grp_age_code), NA, glue("!({gsub('Age', 'visit_age', grp_age_code)})")),
+         grp_name = case_when(lasso_symps %in% "ps_color"~"Change in color of skin, fingers or toes",
+                              lasso_symps %in% "ps_night"~"Nightmares or night terrors",
+                              lasso_symps %in% "ps_tired" ~ "Daytime tiredness/sleepiness or low energy",
+                              lasso_symps %in% "ps_eye" ~ "Watery or red eyes",
+                              lasso_symps %in% "ps_senses" ~ "Change or loss in smell or taste",
+                              lasso_symps %in% "ps_movement" ~ "Trouble with walking, running or stairs",
+                              lasso_symps %in% "ps_lightheaded" ~ "Feeling lightheaded or dizzy",
+                              lasso_symps %in% "ps_nauseous" ~ "Nausea or Vomiting",
+                              lasso_symps %in% "ps_skin" ~ "Itchy skin or skin rash",
+                              lasso_symps %in% "ps_backneckpain" ~ "Back or neck pain",
+                              lasso_symps %in% "ps_bodypain" ~ "Body, muscle, or joint pain",
+                              lasso_symps %in% "ps_brainfog" ~ "Trouble with memory or focusing",
+                              lasso_symps %in% "ps_serious"~"Serious rule breaking or aggressive behaviors",
+                              lasso_symps %in% "ps_behavior"~"Hyperactivity, refusing to follow rules, or frequent tantrums",
+                              lasso_symps %in% "ps_fear"~"Phobias, Separation Anxiety, or Fear of Others",
+                              T ~ short_nm),
+         lasso_names=ifelse(grp_age_code %in% NA, grp_name, paste0(grp_name, " (Eligible if ", grp_age_code, ")")))
 
-cutoff_df <- data.frame(cutoff=c(5.5, 5),
-                        age_strata=c("Ages 6 - 11 (Middle Childhood)","Ages 12 - 17 (Adolescence)"))
 
 # mk_ps_symp_df: will output a long format df of symptoms with misisng values in symptoms to be input into pasc_gen fxn. 
 #Can only be used w week_8 and baseline data. Symptoms will be grouped per the 1216 cohort lasso grouping.
@@ -900,12 +968,42 @@ cutoff_df <- data.frame(cutoff=c(5.5, 5),
 #### to a certain age group ONLY IF everyone in the object ds is not presented this question. When dealing with people who are from all 
 #### different age strata, this filtering may not work, and special care should be used when interpreting results in a dataset with 
 #### all different age groups.
-mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_symptoms, form_vis = formds_list$visit_form, pcs = peds_core_symps, symp_vr = "lasso_symps"){
+mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_symptoms, form_vis=formds_list$visit_form, pcs = peds_core_symps, symp_vr = "lasso_symps", dd){
+  all_names_cs <- names(form_cs)
+  first_name_cs = which(all_names_cs == "ps_colldt")
+  last_name_cs = which(all_names_cs == "form") - 1
+  if(missing(dd)){
+    ignore_vrs <- c("ps_coord___1", "ps_colllang", "ps_infected", "ps_mens", 
+                    "ps_stext_2_4_wk", "ps_stext_2_4_wk_es", "ps_stext_8_wk", 
+                    "ps_stext_8_wk_es")
+  } else {
+    ignore_vrs <- dd %>% 
+      filter(vr.name %in% all_names_cs,
+             field.type == "calc" | grepl("@CALCTEXT", field.annotation)) %>% 
+      pull(vr.name)
+  }
+  
+  
+  all_data_cs <- setdiff(all_names_cs[first_name_cs:last_name_cs], ignore_vrs)
+  
+  # Implementing this may help choosing between missed vs. no pasc. Used in mkrenv to produce ds
+  
+  # started_ps = form_cs %>% 
+  #   select(record_id, redcap_event_name, all_of(all_data_cs)) %>% 
+  #   mutate(across(everything(), as.character)) %>% 
+  #   pivot_longer(cols=all_of(all_data_cs)) %>% 
+  #   mutate(ms_flag = grepl("___", name)) %>% 
+  #   summarise(n_entered = sum((ms_flag & value %in% 1) | (!ms_flag & !is.na(value))),
+  #             .by=c(record_id, redcap_event_name))
+  #   
   
   visit_ds <- ds %>% 
-    left_join(core_ds %>% select(record_id, arm_num, infect_yn_f, study_grp, biosex_f, enrl_dob), by="record_id") %>% 
+    left_join(core_ds %>% select(record_id, arm_num, infect_yn_f, study_grp,biosex_f, enrl_dob), by="record_id") %>% 
     left_join(form_cs %>% 
-                select(record_id, redcap_event_name, ps_colldt, ps_mens, all_of(pcs$vr.name)), 
+                select(record_id, redcap_event_name, ps_colldt, ps_mens, all_of(pcs$vr.name)) %>% 
+                mutate(across(contains("musicul"), \(x) case_when(x == "No" ~ 0,
+                                                                  grepl("^Yes.*no longer.*$", x) ~ 6,
+                                                                  grepl("^Yes.*still.*$", x) ~ 7))), 
               by = c("record_id", "redcap_event_name")) %>% 
     left_join(form_vis %>% select(record_id, redcap_event_name, visit_age),
               by = c("record_id", "redcap_event_name")) %>% 
@@ -920,7 +1018,8 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
                                levels = c("Ages 0 - 2 (Infant)","Ages 3 - 5 (Preschoolers)", "Ages 6 - 11 (Middle Childhood)","Ages 12 - 17 (Adolescence)","Ages 18+ (Young Adult)"), 
                                ordered = T))
   
-  ds_base <- visit_ds %>% 
+  
+  ds_base0 <- visit_ds %>% 
     pivot_longer(!c(record_id, arm_num,enrl_dob, visit_age, age_strata,
                     infect_yn_f, infect_yn, study_grp, biosex_f,
                     redcap_event_name, ps_colldt, ps_mens),
@@ -928,42 +1027,51 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
                  names_to = c("fm", "symptom", "vr_tm"),
                  values_to = "value") %>% 
     mutate(variable=paste(fm, symptom, vr_tm, sep="_")) %>% 
-    left_join(pcs %>% select(variable = vr.name, var_nm, age_code_neg, prefix, age_readable, lasso_symps) %>% 
+    left_join(pcs %>% select(variable = vr.name, var_nm, age_code_neg, prefix, age_readable, lasso_symps, grp_age_code_neg) %>% 
                 distinct(), 
-              by = "variable")  %>% 
-    mutate(not_elig_biosex = symptom == "mens" & biosex_f %!in% c("Female", "Intersex")) %>% 
+              by = "variable")
+  
+  mens_symps <- ds_base0 %>% filter(prefix == "ps_mens") %>% select(symptom) %>% distinct() %>% pull()
+  
+  ds_base <- ds_base0  %>% 
+    mutate(mens_flag = symptom %in% mens_symps) %>% 
+    mutate(not_elig_biosex = mens_flag & biosex_f %!in% c("Female", "Intersex")) %>% 
     mutate(not_elig_age = ifelse(is.na(age_code_neg), NA, eval(parse(text = age_code_neg[1]))),
            .by=age_code_neg) %>% 
-    mutate(not_elig_tf = replace_na(not_elig_age | not_elig_biosex | (symptom == "mens" & visit_age<6), F)) %>% 
+    mutate(not_elig_tf = replace_na(not_elig_age | not_elig_biosex | (mens_flag & visit_age<6), F)) %>% 
     filter(!not_elig_tf) %>% 
     mutate(answer_n = case_when(vr_tm == "pilt" & value %in% 4:5 ~ 1,
                                 vr_tm == "pnlt" & value == 1 ~ 1,
-                                vr_tm == "lt" & value == 6 ~ 1,
-                                vr_tm == "lt" & value == 7 ~ 2,
+                                vr_tm %in% c("lt", "musicul") & value == 6 ~ 1,
+                                vr_tm %in% c("lt", "musicul") & value == 7 ~ 2,
                                 vr_tm == "a84" & value == 3 ~ 1,
                                 vr_tm == "curr" & value == 1 ~ 1,
                                 value %in% c(0, 2) ~ 0), 
-           answer = as.numeric(answer_n > 0),
-           answer2 = as.numeric(answer_n > 1))
+           sympanswer = as.numeric(answer_n > 0),
+           sympanswer_fu = as.numeric(ifelse(vr_tm %in% c("lt", "musicul") & !grepl("week", redcap_event_name), answer_n > 1, answer_n > 0)),
+           sympanswer2 = as.numeric(answer_n > 1))
   
+  comb_select <- function(ds, pf){
+    ds %>%  
+      select(record_id, redcap_event_name, 
+             symptom, starts_with("sympanswer")) %>% 
+      rename_with(\(x) gsub("^symp", pf, x), 
+                  starts_with("sympanswer"))
+  }
+  
+  # This depends on the question asked to MUSIC ppts - need to confirm  
   ds_4wk <- ds_base %>% 
-    filter((arm_num == 2 & redcap_event_name %in% c("week_8_arm_2") & vr_tm == "a84") |
-             (arm_num == 4 & infect_yn_f == "Infected" & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pilt") |
-             ((study_grp == "Uninfected" & arm_num == 4 & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pnlt")) |
-             (grepl("_arm_5$", redcap_event_name) & vr_tm == "lt")) %>%  
-    select(record_id, redcap_event_name, 
-           symptom, 
-           final_answer = answer,
-           final_answer2 = answer2)
-  
-  
+    filter((!grepl("RP253", record_id) & arm_num == 2 & redcap_event_name %in% c("week_8_arm_2") & vr_tm == "a84") |
+             (!grepl("RP253", record_id) & arm_num == 4 & infect_yn_f == "Infected" & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pilt") |
+             (!grepl("RP253", record_id) & study_grp == "Uninfected" & arm_num == 4 & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pnlt") |
+             (!grepl("RP253", record_id) & grepl("_arm_5$", redcap_event_name) & vr_tm == "lt") |
+             (grepl("RP253", record_id) & grepl("month", redcap_event_name) & vr_tm == "musicul")) %>%
+    comb_select("final_")
   
   ds_now <- ds_base %>% 
-    filter(redcap_event_name %in% c("baseline_arm_4", "week_8_arm_2") & vr_tm == "curr") %>%  
-    select(record_id, redcap_event_name, 
-           symptom, 
-           curr_answer = answer,
-           curr_answer2 = answer2)
+    filter(!grepl("RP253", record_id) & redcap_event_name %in% c("baseline_arm_4", "week_8_arm_2") & vr_tm == "curr" | 
+             grepl("RP253", record_id) & redcap_event_name %in% "baseline_arm_4" & vr_tm == "musicul") %>%
+    comb_select("curr_")
   
   lasso_comb <- pcs %>% 
     mutate(symptom = gsub("p.+_", "", var_nm)) %>% 
@@ -980,25 +1088,39 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
               T~0)
   }
   
-  all_vrs <- ds_base %>% select(record_id, redcap_event_name, age_strata, biosex_f, 
-                                infect_yn_f, study_grp, infect_yn, ps_colldt,
-                                !!sym(symp_vr)) %>% distinct()
+  all_vrs <- ds_base %>% 
+    select(record_id, redcap_event_name, age_strata, biosex_f, 
+           infect_yn_f, study_grp, infect_yn, ps_colldt) %>% 
+    distinct()
   
   ds_out <- ds_4wk %>% 
     full_join(ds_now, 
               by=c("record_id", "redcap_event_name", "symptom")) %>% 
     mutate(fu_flag = grepl("month", redcap_event_name)) %>% 
     mutate(persistent_ans = get_pers(final_answer, curr_answer, fu_flag),
+           persistent_ans_fu = get_pers(final_answer_fu, curr_answer_fu, fu_flag),
            persistent_ans2 = get_pers(final_answer2, curr_answer2, fu_flag)) %>% 
     left_join(lasso_comb, by = join_by(symptom)) %>% 
-    summarise(sum_lasso=ifelse(any(!is.na(persistent_ans)), sum(persistent_ans, na.rm=T), NA),
-              sum_lasso2=ifelse(any(!is.na(persistent_ans2)), sum(persistent_ans2, na.rm=T), NA),
-              .by=c(record_id, redcap_event_name, !!sym(symp_vr))) %>% 
-    filter(!is.na(sum_lasso)) %>% 
-    mutate(lasso_answer=as.numeric(sum_lasso>0),
-           lasso_answer2=as.numeric(sum_lasso2>0)) %>% 
+    left_join(ds_base0 %>% select(record_id, redcap_event_name, symptom, visit_age, grp_age_code_neg), 
+              by=c("record_id", "redcap_event_name", "symptom")) %>% 
+    mutate(grp_not_elig_age = ifelse(is.na(grp_age_code_neg ), F, eval(parse(text = grp_age_code_neg[1]))),
+           .by=grp_age_code_neg) %>% 
+    mutate(real_grp_symp=ifelse(grp_not_elig_age==F, lasso_symps, glue("ps_{symptom}"))) %>% 
     full_join(all_vrs,
-              by = join_by(record_id, redcap_event_name, !!sym(symp_vr)))
+              by = join_by(record_id, redcap_event_name)) %>% 
+    select(-lasso_symps) %>% 
+    rename(lasso_symps=real_grp_symp) %>% 
+    mutate(sum_lasso=ifelse(any(!is.na(persistent_ans)), sum(persistent_ans, na.rm=T), NA),
+           sum_lasso_fu=ifelse(any(!is.na(persistent_ans_fu)), sum(persistent_ans_fu, na.rm=T), NA),
+           sum_lasso2=ifelse(any(!is.na(persistent_ans2)), sum(persistent_ans2, na.rm=T), NA),
+           .by=c(record_id, redcap_event_name, age_strata, biosex_f,infect_yn_f,
+                 study_grp,infect_yn,ps_colldt,!!sym(symp_vr),grp_not_elig_age)) %>% 
+    # filter(!is.na(sum_lasso)) %>% 
+    mutate(lasso_answer=ifelse(grp_not_elig_age==F, as.numeric(sum_lasso>0), persistent_ans),
+           lasso_answer_fu=ifelse(grp_not_elig_age==F,as.numeric(sum_lasso_fu>0), persistent_ans_fu),
+           lasso_answer2=ifelse(grp_not_elig_age==F, as.numeric(sum_lasso2>0), persistent_ans2)) %>% 
+    summarise(.by=c(record_id, redcap_event_name, age_strata, biosex_f,infect_yn_f,
+                    study_grp,infect_yn,ps_colldt,!!sym(symp_vr), lasso_answer,lasso_answer_fu, lasso_answer2))
   
   ds_out
 }
@@ -1009,6 +1131,11 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
 #  PASC Score Generating Function   # 
 #####################################
 
+cutoff_df <- data.frame(cutoff=c(4,3,5.5, 5),
+                        age_strata=c("Ages 0 - 2 (Infant)",
+                                     "Ages 3 - 5 (Preschoolers)",
+                                     "Ages 6 - 11 (Middle Childhood)",
+                                     "Ages 12 - 17 (Adolescence)"))
 
 #peds_pasc_fxn: will return a scored df in long and wide format with pasc scores and status.
 ### input: long_ds= long format symptom df. created by mk_symp_df, mk_ps_symp_df. 
@@ -1020,55 +1147,186 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
 
 ####Note: Currently, we only have a PASC definition for certain age groups.
 #### We are unable to ascertain pasc status for other age groups.
-peds_pasc_fxn <- function(long_df, scores=score_tab, cutoff=cutoff_df, symp_vr = "lasso_symps", lasso_ans="lasso_answer"){
+peds_pasc_fxn <- function(long_df, scores=score_tab, cutoff=cutoff_df, lasso_ans="lasso_answer"){
+  
+  symp_cents_ud <- tribble(
+    ~cluster , ~age_strata                     , ~ps_fever , ~ps_tired , ~ps_insomnia , ~ps_tiredwalk , ~ps_sweat , ~ps_hotcold , ~ps_lowapp , ~ps_highapp , ~ps_thirsty , ~ps_weightloss , ~ps_weightgain , ~ps_heightloss , ~ps_eye , ~ps_dryeyes , ~ps_eyebags , ~ps_vision , ~ps_lighthurts , ~ps_hearing , ~ps_tinnitus , ~ps_runnynose , ~ps_senses , ~ps_drymouth , ~ps_throat , ~ps_lostvoice , ~ps_swallowing , ~ps_teeth , ~ps_chapped , ~ps_drycough , ~ps_wetcough , ~ps_barkcough , ~ps_breathing , ~ps_painbreath , ~ps_painchest , ~ps_palprest , ~ps_palpexer , ~ps_lightheaded , ~ps_movement , ~ps_cramp , ~ps_nauseous , ~ps_diarrhea , ~ps_constipation , ~ps_painurine , ~ps_excesspee , ~ps_skin , ~ps_nails , ~ps_hair , ~ps_skincolor , ~ps_digitcolor , ~ps_muscle , ~ps_bodypain , ~ps_backneckpain , ~ps_headache , ~ps_shaky , ~ps_tingly , ~ps_cantmove , ~ps_brainfog , ~ps_talking , ~ps_sad , ~ps_anxious , ~ps_phobia , ~ps_fearpeople , ~ps_fearcrowd , ~ps_panicattack , ~ps_refuseschool , ~ps_nightmares , ~ps_hallucinate , ~ps_rocking , ~ps_hyperactive , ~ps_rulebreak , ~ps_liesteal , ~ps_repeatmem ,
+    1        , "Ages 12 - 17 (Adolescence)"    , 0.1205    , 0.9699    , 0.5964       , 0.6506        , 0.2952    , 0.4518      , 0.4759     , 0.1265      , 0.2470      , 0.1988         , 0.1205         , 0.0482         , 0.2108  , 0.1024      , 0.3133      , 0.2349     , 0.4217         , 0.0482      , 0.2169       , 0.2892        , 0.2952     , 0.1205       , 0.2349     , 0.0843        , 0.0964         , 0.0602    , 0.2470      , 0.2410       , 0.1566       , 0.0964        , 0.2892        , 0.1807         , 0.3434        , 0.4819       , 0.5120       , 0.9398          , 0.3976       , 0.4518    , 0.5542       , 0.2289       , 0.2651           , 0.0120        , 0.0663        , 0.2169   , 0.0602    , 0.1446   , 0.0843        , 0.0723         , 0.4940     , 0.7831       , 0.6145           , 0.8614       , 0.2952    , 0.3434     , 0.0482       , 0.7229       , 0.1325      , 0.4699  , 0.6446      , 0.2590     , 0.1867         , 0.3434        , 0.3614          , 0.2108           , 0.1988         , 0.0783          , 0.0542      , 0.0301          , 0.1024        , 0.0482       , 0.1446        ,
+    2        , "Ages 12 - 17 (Adolescence)"    , 0.0695    , 0.8930    , 0.4866       , 0.4118        , 0.0856    , 0.1711      , 0.2193     , 0.1070      , 0.1497      , 0.0909         , 0.1123         , 0.0160         , 0.1230  , 0.0321      , 0.1444      , 0.0909     , 0.1818         , 0.0000      , 0.0481       , 0.2941        , 0.1123     , 0.0214       , 0.1390     , 0.0267        , 0.0428         , 0.0428    , 0.1497      , 0.1765       , 0.0642       , 0.0428        , 0.0428        , 0.0428         , 0.0909        , 0.1016       , 0.1016       , 0.0642          , 0.1176       , 0.2193    , 0.1658       , 0.0909       , 0.1444           , 0.0267        , 0.0428        , 0.1230   , 0.0107    , 0.0481   , 0.0107        , 0.0160         , 0.2086     , 0.6684       , 0.3850           , 0.4385       , 0.0428    , 0.0535     , 0.0053       , 0.4011       , 0.0642      , 0.3904  , 0.4278      , 0.1444     , 0.0802         , 0.1872        , 0.1711          , 0.1711           , 0.0802         , 0.0374          , 0.0267      , 0.0856          , 0.1176        , 0.0428       , 0.0695        ,
+    3        , "Ages 12 - 17 (Adolescence)"    , 0.0761    , 0.2826    , 0.2065       , 0.0326        , 0.0326    , 0.0109      , 0.1522     , 0.0326      , 0.0978      , 0.0543         , 0.0217         , 0.0109         , 0.0870  , 0.0217      , 0.0543      , 0.0217     , 0.0326         , 0.0000      , 0.0109       , 0.2065        , 1.0000     , 0.0435       , 0.1304     , 0.0543        , 0.0435         , 0.0217    , 0.1196      , 0.1630       , 0.0761       , 0.1196        , 0.0435        , 0.0217         , 0.0326        , 0.0761       , 0.0543       , 0.0543          , 0.0217       , 0.0435    , 0.0978       , 0.0543       , 0.0435           , 0.0000        , 0.0000        , 0.0652   , 0.0000    , 0.0109   , 0.0109        , 0.0109         , 0.0109     , 0.1413       , 0.0870           , 0.2174       , 0.0109    , 0.0109     , 0.0000       , 0.1304       , 0.0109      , 0.2065  , 0.2391      , 0.0543     , 0.0217         , 0.0870        , 0.0761          , 0.0543           , 0.0109         , 0.0109          , 0.0109      , 0.0543          , 0.0217        , 0.0217       , 0.0000        ,
+    1        , "Ages 6 - 11 (Middle Childhood)", 0.2069    , 0.7931    , 0.6207       , 0.6897        , 0.2069    , 0.4138      , 0.2414     , 0.2069      , 0.2414      , 0.0345         , 0.2414         , 0.0000         , 0.2414  , 0.0345      , 0.3793      , 0.2069     , 0.3793         , 0.1724      , 0.2759       , 0.4483        , 0.2759     , 0.1379       , 0.4138     , 0.0345        , 0.1379         , 0.1724    , 0.3103      , 0.3448       , 0.2069       , 0.1724        , 0.3793        , 0.3103         , 0.4828        , 0.4138       , 0.5517       , 0.8621          , 0.5172       , 0.7586    , 0.6552       , 0.3448       , 0.2759           , 0.0690        , 0.1034        , 0.4828   , 0.1034    , 0.0690   , 0.1379        , 0.1724         , 0.4828     , 0.8276       , 0.5862           , 1.0000       , 0.3448    , 0.2759     , 0.1034       , 0.7931       , 0.2414      , 0.6897  , 0.6897      , 0.2759     , 0.2069         , 0.3103        , NA              , 0.4483           , 0.3793         , 0.1034          , 0.1379      , 0.1379          , 0.2069        , 0.0345       , 0.3103        ,
+    2        , "Ages 6 - 11 (Middle Childhood)", 0.0500    , 0.5250    , 0.2000       , 0.4250        , 0.1250    , 0.1250      , 0.2750     , 0.0500      , 0.1500      , 0.1000         , 0.0500         , 0.0000         , 0.2000  , 0.0500      , 0.2500      , 0.2250     , 0.2000         , 0.0750      , 0.0750       , 0.3750        , 0.1500     , 0.0250       , 0.1250     , 0.0500        , 0.0000         , 0.0500    , 0.1500      , 0.2500       , 0.0500       , 0.0500        , 0.0750        , 0.1000         , 0.1500        , 0.2000       , 0.2250       , 0.2250          , 0.1500       , 0.0500    , 0.1500       , 0.0750       , 0.1000           , 0.0750        , 0.0750        , 0.2500   , 0.0000    , 0.0500   , 0.0500        , 0.0000         , 0.1250     , 0.6000       , 0.4250           , 0.9500       , 0.0750    , 0.1250     , 0.0250       , 0.2500       , 0.0500      , 0.2750  , 0.3250      , 0.1000     , 0.0750         , 0.1250        , NA              , 0.1500           , 0.1750         , 0.0500          , 0.0000      , 0.1000          , 0.1000        , 0.0250       , 0.0250        ,
+    3        , "Ages 6 - 11 (Middle Childhood)", 0.0200    , 0.3600    , 0.6400       , 0.2600        , 0.0800    , 0.0200      , 0.2800     , 0.1000      , 0.1400      , 0.0800         , 0.2000         , 0.0200         , 0.1000  , 0.0400      , 0.2200      , 0.0800     , 0.1200         , 0.0800      , 0.0400       , 0.3600        , 0.1600     , 0.0800       , 0.0200     , 0.0000        , 0.0200         , 0.1000    , 0.2200      , 0.1800       , 0.0600       , 0.0800        , 0.0200        , 0.0000         , 0.0400        , 0.1000       , 0.0800       , 0.0600          , 0.1400       , 0.1600    , 0.1200       , 0.1000       , 0.1000           , 0.0200        , 0.0600        , 0.2400   , 0.0400    , 0.0400   , 0.0400        , 0.0200         , 0.1400     , 0.3000       , 0.2200           , 0.0000       , 0.0200    , 0.0600     , 0.0200       , 0.6200       , 0.1400      , 0.3000  , 0.5000      , 0.4800     , 0.1800         , 0.3000        , NA              , 0.2200           , 0.2400         , 0.0600          , 0.0800      , 0.3000          , 0.3000        , 0.1400       , 0.2400        ,
+    4        , "Ages 6 - 11 (Middle Childhood)", 0.1212    , 0.3636    , 0.2727       , 0.2424        , 0.1212    , 0.0909      , 0.3030     , 0.1515      , 0.1818      , 0.0303         , 0.0606         , 0.0000         , 0.0909  , 0.0000      , 0.1515      , 0.0303     , 0.0606         , 0.0606      , 0.0606       , 0.1818        , 0.1212     , 0.0000       , 0.1515     , 0.0606        , 0.0909         , 0.0303    , 0.1212      , 0.1818       , 0.1818       , 0.1212        , 0.0606        , 0.0000         , 0.1515        , 0.1212       , 0.0909       , 0.0909          , 0.0909       , 1.0000    , 0.6061       , 0.1515       , 0.3030           , 0.0303        , 0.0909        , 0.2727   , 0.0000    , 0.0303   , 0.0606        , 0.0000         , 0.0909     , 0.4242       , 0.0606           , 0.5758       , 0.0000    , 0.0303     , 0.0000       , 0.0909       , 0.0303      , 0.2121  , 0.4242      , 0.1212     , 0.1515         , 0.1212        , NA              , 0.1515           , 0.1515         , 0.0303          , 0.0303      , 0.1515          , 0.1515        , 0.0606       , 0.0606        ,
+  )
+  symp_cents <- tribble(
+    ~age_strata                    , ~cluster , ~ps_fever , ~ps_tired , ~ps_insomnia , ~ps_tiredwalk , ~ps_sweat , ~ps_hotcold , ~ps_lowapp , ~ps_highapp , ~ps_thirsty , ~ps_weightloss , ~ps_weightgain , ~ps_heightloss , ~ps_eye , ~ps_dryeyes , ~ps_eyebags , ~ps_vision , ~ps_lighthurts , ~ps_hearing , ~ps_tinnitus , ~ps_runnynose , ~ps_senses , ~ps_drymouth , ~ps_throat , ~ps_lostvoice , ~ps_swallowing , ~ps_teeth , ~ps_chapped , ~ps_drycough , ~ps_wetcough , ~ps_barkcough , ~ps_breathing , ~ps_painbreath , ~ps_painchest , ~ps_palprest , ~ps_palpexer , ~ps_lightheaded , ~ps_movement , ~ps_cramp , ~ps_nauseous , ~ps_diarrhea , ~ps_constipation , ~ps_painurine , ~ps_excesspee , ~ps_skin , ~ps_nails , ~ps_hair , ~ps_skincolor , ~ps_digitcolor , ~ps_muscle , ~ps_bodypain , ~ps_backneckpain , ~ps_headache , ~ps_shaky , ~ps_tingly , ~ps_cantmove , ~ps_brainfog , ~ps_talking , ~ps_sad , ~ps_anxious , ~ps_phobia , ~ps_fearpeople , ~ps_fearcrowd , ~ps_panicattack , ~ps_refuseschool , ~ps_nightmares , ~ps_hallucinate , ~ps_rocking , ~ps_hyperactive , ~ps_rulebreak , ~ps_liesteal , ~ps_repeatmem , ~ps_periodmiss , ~ps_periodfreq , ~ps_periodheavy , ~ps_periodlight ,
+    'Ages 12 - 17 (Adolescence)'     , NA       , 0.0032    , 0.0743    , 0.0562       , 0.0079        , 0.0082    , 0.0057      , 0.0265     , 0.0156      , 0.0099      , 0.0099         , 0.0159         , 0.0042         , 0.0084  , 0.0079      , 0.0220      , 0.0099     , 0.0114         , 0.0012      , 0.0045       , 0.0379        , 0.0015     , 0.0022       , 0.0092     , 0.0035        , 0.0030         , 0.0047    , 0.0285      , 0.0188       , 0.0119       , 0.0047        , 0.0030        , 0.0027         , 0.0067        , 0.0092       , 0.0114       , 0.0238          , 0.0062       , 0.0265    , 0.0188       , 0.0089       , 0.0208           , 0.0015        , 0.0037        , 0.0322   , 0.0030    , 0.0050   , 0.0047        , 0.0025         , 0.0072     , 0.0327       , 0.0206           , 0.0627       , 0.0050    , 0.0050     , 0.0007       , 0.0352       , 0.0015      , 0.0944  , 0.1229      , 0.0233     , 0.0154         , 0.0322        , 0.0263          , 0.0181           , 0.0097         , 0.0025          , 0.0017      , 0.0144          , 0.0228        , 0.0121       , 0.0064        , 0.0097         , 0.0079         , 0.0233          , 0.0022,
+    'Ages 12 - 17 (Adolescence)'     , 1        , 0.1212    , 0.9697    , 0.5939       , 0.6545        , 0.2970    , 0.4545      , 0.4788     , 0.1273      , 0.2485      , 0.2000         , 0.1212         , 0.0485         , 0.2121  , 0.1030      , 0.3152      , 0.2364     , 0.4242         , 0.0485      , 0.2182       , 0.2848        , 0.2970     , 0.1212       , 0.2303     , 0.0848        , 0.0970         , 0.0606    , 0.2485      , 0.2364       , 0.1576       , 0.0970        , 0.2909        , 0.1818         , 0.3455        , 0.4848       , 0.5152       , 0.9394          , 0.4121       , 0.4545    , 0.5515       , 0.2303       , 0.2667           , 0.0121        , 0.0667        , 0.2182   , 0.0606    , 0.1455   , 0.0848        , 0.0727         , 0.4970     , 0.7818       , 0.6182           , 0.8606       , 0.2970    , 0.3455     , 0.0485       , 0.7212       , 0.1333      , 0.4727  , 0.6485      , 0.2606     , 0.1879         , 0.3455        , 0.3576          , 0.2121           , 0.1939         , 0.0788          , 0.0545      , 0.0303          , 0.0970        , 0.0424       , 0.1455        , 0.1091         , 0.0727         , 0.1697          , 0.0424,
+    'Ages 12 - 17 (Adolescence)'     , 2        , 0.0707    , 0.8913    , 0.4946       , 0.4130        , 0.0815    , 0.1576      , 0.2174     , 0.1087      , 0.1522      , 0.0924         , 0.1141         , 0.0163         , 0.1250  , 0.0326      , 0.1467      , 0.0924     , 0.1848         , 0.0000      , 0.0435       , 0.2935        , 0.1141     , 0.0217       , 0.1304     , 0.0217        , 0.0435         , 0.0435    , 0.1467      , 0.1685       , 0.0652       , 0.0435        , 0.0380        , 0.0326         , 0.0870        , 0.1033       , 0.1033       , 0.0652          , 0.1196       , 0.2174    , 0.1685       , 0.0924       , 0.1467           , 0.0272        , 0.0435        , 0.1250   , 0.0109    , 0.0435   , 0.0109        , 0.0163         , 0.2011     , 0.6685       , 0.3804           , 0.4293       , 0.0435    , 0.0489     , 0.0000       , 0.4022       , 0.0652      , 0.3913  , 0.4293      , 0.1467     , 0.0815         , 0.1902        , 0.1685          , 0.1739           , 0.0815         , 0.0380          , 0.0272      , 0.0870          , 0.1196        , 0.0435       , 0.0707        , 0.0326         , 0.0217         , 0.0978          , 0.0054,
+    'Ages 12 - 17 (Adolescence)'     , 3        , 0.0761    , 0.2826    , 0.2065       , 0.0326        , 0.0326    , 0.0109      , 0.1522     , 0.0326      , 0.0978      , 0.0543         , 0.0217         , 0.0109         , 0.0870  , 0.0217      , 0.0543      , 0.0217     , 0.0326         , 0.0000      , 0.0109       , 0.2065        , 1.0000     , 0.0435       , 0.1304     , 0.0543        , 0.0435         , 0.0217    , 0.1196      , 0.1630       , 0.0761       , 0.1196        , 0.0435        , 0.0217         , 0.0326        , 0.0761       , 0.0543       , 0.0543          , 0.0217       , 0.0435    , 0.0978       , 0.0543       , 0.0435           , 0.0000        , 0.0000        , 0.0652   , 0.0000    , 0.0109   , 0.0109        , 0.0109         , 0.0109     , 0.1413       , 0.0870           , 0.2174       , 0.0109    , 0.0109     , 0.0000       , 0.1304       , 0.0109      , 0.2065  , 0.2391      , 0.0543     , 0.0217         , 0.0870        , 0.0761          , 0.0543           , 0.0109         , 0.0109          , 0.0109      , 0.0543          , 0.0217        , 0.0217       , 0.0000        , 0.0217         , 0.0000         , 0.0326          , 0.0217,
+    'Ages 6 - 11 (Middle Childhood)' , NA       , 0.0067    , 0.0415    , 0.0281       , 0.0134        , 0.0094    , 0.0080      , 0.0134     , 0.0214      , 0.0094      , 0.0080         , 0.0241         , 0.0040         , 0.0067  , 0.0054      , 0.0268      , 0.0187     , 0.0067         , 0.0040      , 0.0027       , 0.0495        , 0.0094     , 0.0080       , 0.0187     , 0.0027        , 0.0040         , 0.0040    , 0.0348      , 0.0469       , 0.0228       , 0.0214        , 0.0054        , 0.0027         , 0.0054        , 0.0054       , 0.0161       , 0.0067          , 0.0067       , 0.0134    , 0.0040       , 0.0067       , 0.0228           , 0.0000        , 0.0040        , 0.0254   , 0.0013    , 0.0013   , 0.0013        , 0.0013         , 0.0094     , 0.0268       , 0.0054           , 0.0308       , 0.0027    , 0.0067     , 0.0013       , 0.0040       , 0.0013      , 0.0214  , 0.0656      , 0.0228     , 0.0080         , 0.0120        , 0.0000          , 0.0067           , 0.0228         , 0.0040          , 0.0040      , 0.0455          , 0.0335        , 0.0094       , 0.0107        , 0.0000         , 0.0013         , 0.0027          , 0.0000,
+    'Ages 6 - 11 (Middle Childhood)' , 3        , 0.0200    , 0.3600    , 0.6400       , 0.2600        , 0.0800    , 0.0200      , 0.2800     , 0.1000      , 0.1400      , 0.0800         , 0.2000         , 0.0200         , 0.1000  , 0.0400      , 0.2200      , 0.0800     , 0.1200         , 0.0800      , 0.0400       , 0.3600        , 0.1600     , 0.0800       , 0.0200     , 0.0000        , 0.0200         , 0.1000    , 0.2200      , 0.1800       , 0.0600       , 0.0800        , 0.0200        , 0.0000         , 0.0400        , 0.1000       , 0.0800       , 0.0600          , 0.1400       , 0.1600    , 0.1200       , 0.1000       , 0.1000           , 0.0200        , 0.0600        , 0.2400   , 0.0400    , 0.0400   , 0.0400        , 0.0200         , 0.1400     , 0.3200       , 0.2200           , 0.0000       , 0.0200    , 0.0600     , 0.0200       , 0.6200       , 0.1400      , 0.3000  , 0.5000      , 0.4800     , 0.1800         , 0.3000        , 0.0000          , 0.2200           , 0.2400         , 0.0600          , 0.0800      , 0.3000          , 0.3000        , 0.1400       , 0.2400        , 0.0000         , 0.0000         , 0.0000          , 0.0000,
+    'Ages 6 - 11 (Middle Childhood)' , 2        , 0.0500    , 0.5250    , 0.2000       , 0.4250        , 0.1250    , 0.1250      , 0.2750     , 0.0500      , 0.1500      , 0.1000         , 0.0500         , 0.0000         , 0.2000  , 0.0500      , 0.2500      , 0.2250     , 0.2000         , 0.0750      , 0.0750       , 0.3750        , 0.1500     , 0.0250       , 0.1250     , 0.0500        , 0.0000         , 0.0500    , 0.1500      , 0.2500       , 0.0500       , 0.0500        , 0.0750        , 0.1000         , 0.1500        , 0.2000       , 0.2250       , 0.2250          , 0.1500       , 0.0500    , 0.1500       , 0.0750       , 0.1000           , 0.0750        , 0.0750        , 0.2500   , 0.0000    , 0.0500   , 0.0500        , 0.0000         , 0.1250     , 0.6000       , 0.4250           , 0.9500       , 0.0750    , 0.1250     , 0.0250       , 0.2500       , 0.0500      , 0.2750  , 0.3250      , 0.1000     , 0.0750         , 0.1250        , 0.0000          , 0.1500           , 0.1750         , 0.0500          , 0.0000      , 0.1000          , 0.1000        , 0.0250       , 0.0250        , 0.0250         , 0.0250         , 0.0250          , 0.0000,
+    'Ages 6 - 11 (Middle Childhood)' , 1        , 0.2143    , 0.7857    , 0.6429       , 0.6786        , 0.2143    , 0.3929      , 0.2500     , 0.2143      , 0.2500      , 0.0357         , 0.2500         , 0.0000         , 0.2500  , 0.0357      , 0.3571      , 0.1786     , 0.3571         , 0.1429      , 0.2857       , 0.4643        , 0.2500     , 0.1071       , 0.3929     , 0.0357        , 0.1071         , 0.1429    , 0.2857      , 0.3571       , 0.2143       , 0.1786        , 0.3571        , 0.2857         , 0.4643        , 0.3929       , 0.5357       , 0.8571          , 0.5357       , 0.7500    , 0.6429       , 0.3571       , 0.2857           , 0.0714        , 0.1071        , 0.4643   , 0.1071    , 0.0714   , 0.1429        , 0.1786         , 0.4643     , 0.8214       , 0.6071           , 1.0000       , 0.3214    , 0.2500     , 0.0714       , 0.7857       , 0.2143      , 0.6786  , 0.6786      , 0.2500     , 0.1786         , 0.2857        , 0.0000          , 0.4286           , 0.3571         , 0.0714          , 0.1071      , 0.1071          , 0.2143        , 0.0357       , 0.2857        , 0.0000         , 0.0357         , 0.0357          , 0.0000,
+    'Ages 6 - 11 (Middle Childhood)' , 4        , 0.1212    , 0.3636    , 0.2727       , 0.2424        , 0.1212    , 0.0909      , 0.3030     , 0.1515      , 0.1818      , 0.0303         , 0.0606         , 0.0000         , 0.0909  , 0.0000      , 0.1515      , 0.0303     , 0.0606         , 0.0606      , 0.0606       , 0.1818        , 0.1212     , 0.0000       , 0.1515     , 0.0606        , 0.0909         , 0.0303    , 0.1212      , 0.1818       , 0.1818       , 0.1212        , 0.0606        , 0.0000         , 0.1515        , 0.1212       , 0.0909       , 0.0909          , 0.0909       , 1.0000    , 0.6061       , 0.1515       , 0.3030           , 0.0303        , 0.0909        , 0.2727   , 0.0000    , 0.0303   , 0.0606        , 0.0000         , 0.0909     , 0.4242       , 0.0606           , 0.5758       , 0.0000    , 0.0303     , 0.0000       , 0.0909       , 0.0303      , 0.2121  , 0.4242      , 0.1212     , 0.1515         , 0.1212        , 0.0000          , 0.1515           , 0.1515         , 0.0303          , 0.0303      , 0.1515          , 0.1515        , 0.0606       , 0.0606        , 0.0000         , 0.0000         , 0.0000          , 0.0000,
+  )
   
   sum_na <- function(x, ana_out = 0) {
     if(all(is.na(x))) return(ana_out)
     sum(x, na.rm=T)
   }
   
-  ds_score <- long_df %>% 
-    left_join(scores %>% 
-                select(lasso_symps, score, age_strata), 
-              by=c("lasso_symps", "age_strata")) %>% 
-    summarise(n_total_symp=n(),
-              n_missing_symp=sum(is.na(!!sym(lasso_ans))),
-              n_score_symps=sum(!is.na(score)),
-              n_na_score_symps=sum(is.na(!!sym(lasso_ans)) & !is.na(score)),
-              max_missed_score=sum_na(score[is.na(!!sym(lasso_ans))]),
-              max_poss_score=sum_na(score),
-              score_sum=sum_na(score*!!sym(lasso_ans)),
-              .by=c(record_id, redcap_event_name, age_strata)) %>% 
-    left_join(cutoff, by="age_strata") %>% 
-    mutate(n_done = n_total_symp - n_missing_symp,
-           pasc = factor(case_when(n_done == 0 ~ NA,
-                                   score_sum >= cutoff~"PASC",
-                                   score_sum <  cutoff~"Unspecified"), 
-                         levels = c("PASC", "Unspecified"), 
-                         ordered=T),
-           pasc_na = factor(case_when(score_sum < cutoff & max_missed_score >= (cutoff - score_sum) ~ NA,
-                                      score_sum >= cutoff~"PASC",
-                                      score_sum <  cutoff~"Unspecified"), 
-                            levels = c("PASC", "Unspecified"), 
-                            ordered=T))
   
-  wide_df <- long_df %>% 
-    select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_colldt,
-           infect_yn, all_of(c(symp_vr, lasso_ans))) %>% 
-    pivot_wider(names_from=all_of(symp_vr), values_from = all_of(lasso_ans)) %>% 
-    left_join(ds_score %>% 
-                select(record_id, redcap_event_name, score_sum, cutoff, n_na_score_symps, n_score_symps, starts_with("pasc")),
-              by = join_by(record_id, redcap_event_name))
+  clus_vrs <- setdiff(names(symp_cents), c("cluster", "age_strata"))
   
-  # This version isn't needed but including in case it's in use anywhere
-  long_score <- long_df %>% 
-    select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_colldt,
-           infect_yn, all_of(c(symp_vr, lasso_ans))) %>% 
-    left_join(ds_score %>% 
-                select(record_id, redcap_event_name, score_sum, cutoff, n_na_score_symps, n_score_symps, starts_with("pasc")),
-              by = join_by(record_id, redcap_event_name))
+  get_clus <- function(ds, vr, pf=""){
+    fxndat0 <- ds %>% 
+      select(record_id, redcap_event_name, age_strata, lasso_symps, !!sym(vr)) %>% 
+      filter(lasso_symps %in% clus_vrs) %>% 
+      left_join(symp_cents %>% 
+                  filter(!is.na(cluster)) %>% 
+                  pivot_longer(-c(cluster, age_strata),
+                               names_to="lasso_symps", values_to="cent_val"),
+                by = join_by(lasso_symps, age_strata),
+                relationship = "many-to-many") %>% 
+      mutate(sq_diff = (replace_na(!!sym(vr), 0) - replace_na(cent_val, 0)) ^ 2)
+    
+    fxndat <- fxndat0 %>% 
+      summarise(eucl_dist = sqrt(sum(sq_diff, na.rm=T)),
+                .by=c(record_id, redcap_event_name, cluster)) %>% 
+      arrange(record_id, redcap_event_name, eucl_dist)
+    
+    fxndat_summ <- fxndat %>% 
+      filter(row_number() == 1, 
+             .by=c(record_id, redcap_event_name))
+    
+    fxndat_wide <- fxndat_summ %>% 
+      select(record_id, redcap_event_name, cluster) %>% 
+      mutate(year=2024) %>% 
+      pivot_wider(names_from=year, values_from= cluster,
+                  names_prefix = paste0("pasc_cc_"))
+    
+    ds %>% 
+      left_join(scores %>% 
+                  select(lasso_symps, score, age_strata), 
+                by=c("lasso_symps", "age_strata")) %>% 
+      summarise(n_total_symp=n(),
+                n_missing_symp=sum(is.na(!!sym(vr))),
+                n_score_symps=sum(!is.na(score)),
+                n_na_score_symps=sum(is.na(!!sym(vr)) & !is.na(score)),
+                max_missed_score=sum_na(score[is.na(!!sym(vr))]),
+                max_poss_score=sum_na(score),
+                score_sum=sum_na(score*!!sym(vr)),
+                score_sum_nona=ifelse(is.na(score_sum),0,score_sum),
+                .by=c(record_id, redcap_event_name, age_strata)) %>% 
+      left_join(cutoff, by="age_strata") %>% 
+      mutate(n_done = n_total_symp - n_missing_symp,
+             pasc = factor(case_when(score_sum_nona< cutoff~"Unspecified",
+                                     score_sum >= cutoff~"PASC",
+                                     score_sum <  cutoff~"Unspecified"), 
+                           levels = c("PASC", "Unspecified"), 
+                           ordered=T),
+             pasc_lc=factor(case_when(pasc %in% "PASC"~"Long COVID",
+                                      T~pasc),
+                            levels = c("Long COVID", "Unspecified"), 
+                            ordered=T),
+             pasc_ndone_na=factor(case_when(n_done == 0 ~ NA,
+                                            score_sum >= cutoff~"PASC",
+                                            score_sum <  cutoff~"Unspecified"), 
+                                  levels = c("PASC", "Unspecified"), 
+                                  ordered=T),
+             pasc_na = factor(case_when(score_sum < cutoff & max_missed_score >= (cutoff - score_sum) ~ NA,
+                                        score_sum >= cutoff~"PASC",
+                                        score_sum <  cutoff~"Unspecified"), 
+                              levels = c("PASC", "Unspecified"), 
+                              ordered=T)) %>% 
+      left_join(fxndat_wide, by=join_by(record_id, redcap_event_name)) %>% 
+      mutate(across(starts_with("pasc_cc_"), \(x) ifelse(pasc == "PASC", x, 0)))
+  }
   
-  return(list(long_df=long_score, wide_df=wide_df))
+  ds_score <- get_clus(long_df, "lasso_answer")
+  ds_score_fu <- get_clus(long_df, "lasso_answer_fu")
+  ds_score2 <- get_clus(long_df, "lasso_answer2")
+  
+  
+  if(lasso_ans == "lasso_answer2"){
+    ## Used for selection to T3 and not to be used elsewhere
+    wide_df <- long_df %>% 
+      select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_colldt,
+             infect_yn, lasso_answer2, lasso_symps) %>% 
+      pivot_wider(names_from=lasso_symps, values_from = lasso_answer2) %>% 
+      left_join(ds_score2 %>% 
+                  select(record_id, redcap_event_name, score_sum, cutoff, n_na_score_symps, n_score_symps, starts_with("pasc")),
+                by = join_by(record_id, redcap_event_name)) %>%
+      select(-any_of(starts_with("pasc_cc_")))
+    
+    long_score <- long_df %>% 
+      select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_colldt,
+             infect_yn, starts_with("pasc_cc_"), lasso_answer2, lasso_symps) %>% 
+      left_join(ds_score2 %>% 
+                  select(record_id, redcap_event_name, score_sum, cutoff, n_na_score_symps, n_score_symps, starts_with("pasc")),
+                by = join_by(record_id, redcap_event_name)) %>%
+      select(-any_of(starts_with("pasc_cc_")))
+  } else {
+    wide_df <- long_df %>% 
+      select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_colldt,
+             infect_yn, lasso_answer, lasso_answer_fu, lasso_symps) %>% 
+      pivot_wider(names_from=lasso_symps, values_from = c(lasso_answer, lasso_answer_fu),
+                  names_glue="{ifelse(.value=='lasso_answer', lasso_symps, paste0(lasso_symps, '_now'))}") %>% 
+      left_join(ds_score %>% 
+                  select(record_id, redcap_event_name, score_sum, cutoff, n_na_score_symps, n_score_symps, starts_with("pasc")),
+                by = join_by(record_id, redcap_event_name)) %>% 
+      left_join(ds_score_fu %>% 
+                  select(record_id, redcap_event_name, score_sum_now=score_sum, n_score_symps_now=n_score_symps, starts_with("pasc")) %>% 
+                  rename_with(\(x) paste0(x, "_now"), starts_with("pasc")),
+                by = join_by(record_id, redcap_event_name))
+    
+    long_score <- long_df %>% 
+      select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_colldt,
+             infect_yn, starts_with("pasc_cc_"), lasso_answer_fu, lasso_answer, lasso_symps) %>% 
+      left_join(ds_score %>% 
+                  select(record_id, redcap_event_name, score_sum, cutoff, n_na_score_symps, n_score_symps, starts_with("pasc")),
+                by = join_by(record_id, redcap_event_name)) %>% 
+      left_join(ds_score_fu %>% 
+                  select(record_id, redcap_event_name, score_sum_now=score_sum, n_score_symps_now=n_score_symps, starts_with("pasc")) %>% 
+                  rename_with(\(x) paste0(x, "_now"), starts_with("pasc")),
+                by = join_by(record_id, redcap_event_name))
+  }
+  
+  grp_symp_key <- peds_core_symps %>% 
+    summarise(.by=c(lasso_symps, grp_age_code)) %>% 
+    crossing(age_strata=levels(wide_df$age_strata)) %>% 
+    mutate(elig_age_strata=case_when(is.na(grp_age_code)~T, 
+                                     grp_age_code %in% c("Age >= 0 & Age < 6") & 
+                                       age_strata %in% c("Ages 0 - 2 (Infant)",
+                                                         "Ages 3 - 5 (Preschoolers)")~ T,
+                                     grp_age_code %in% c("Age >= 2") & 
+                                       age_strata %in% c("Ages 0 - 2 (Infant)")~ T,
+                                     grp_age_code %in% c("Age >= 2")~T,
+                                     grp_age_code %in% c("Age >= 3") & 
+                                       age_strata %!in% c("Ages 0 - 2 (Infant)")~T,
+                                     grp_age_code %in% c("Age >= 6") & 
+                                       age_strata %!in% c("Ages 0 - 2 (Infant)",
+                                                          "Ages 3 - 5 (Preschoolers)")~T,
+                                     grp_age_code %in% c("Age >= 12") & 
+                                       age_strata %in% c("Ages 12 - 17 (Adolescence)",
+                                                         "Ages 18+ (Young Adult)")~T,
+                                     T~F),
+           notes=ifelse(grp_age_code %in% c("Age >= 2") & 
+                          age_strata %in% c("Ages 0 - 2 (Infant)"), "Only some participants in this age strata are eligible for this symptom. Consider carefully.", NA)) %>% 
+    bind_rows(peds_core_symps %>%
+                filter(grp_age_code %in% "Age >= 0 & Age < 6", final_nm!=lasso_symps) %>% 
+                summarise(.by=c(final_nm, age_code)) %>% 
+                select(lasso_symps=final_nm, grp_age_code=age_code) %>% 
+                crossing(age_strata=levels(wide_df$age_strata)) %>% 
+                mutate(elig_age_strata=case_when(grp_age_code %in% " visit_age >=0 & visit_age <6 "~F,
+                                                 age_strata %in% c("Ages 0 - 2 (Infant)",
+                                                                   "Ages 3 - 5 (Preschoolers)")~F,
+                                                 T~T))) %>% 
+    mutate(grp_age_code=gsub("visit_age", "Age", grp_age_code))
+  
+  return(list(long_df=long_score, wide_df=wide_df, cents=symp_cents, age_symp_key=grp_symp_key))
 }
 
 all_names_cs <- names(formds_list$covid_symptoms)
@@ -1094,7 +1352,7 @@ symp_ds <- started_ps %>%
   filter(n_entered > 0) %>% 
   select(record_id, redcap_event_name) %>% 
   filter(redcap_event_name %!in% c("baseline_arm_2", "week_2_arm_2", "week_4_arm_2")) %>% 
-  mk_ps_symp_df()
+  mk_ps_symp_df(pcs = peds_core_symps)
 
 symp_ds_plist <- symp_ds %>% 
   peds_pasc_fxn()
