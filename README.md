@@ -1,4 +1,4 @@
-# recover-nbr-public
+# recover-nbr-public: Public code repository for the Network of Biostatisticians for RECOVER
 
 # Code updates 
 
