@@ -20,7 +20,7 @@ setwd(paste0(sbgenomics_path, "/project-files/code/"))
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
 
-bargs <- getArgs(defaults = list(dt = "20241205"))
+bargs <- getArgs(defaults = list(dt = "20250305"))
 
 # check for whether RDs objects already exist in this project's
 if(length(list.files(paste0("../DM/congenital/", bargs$dt))) > 0) stop(glue("RDS objects already in existing project - delete RDS files from project-files/DM/congenital/{bargs$dt}"))
@@ -31,7 +31,7 @@ dm_rt_dt_y <- substr(dm_rt_dt, 1, 4)
 dm_rt_dt_m <- substr(dm_rt_dt, 5, 6)
 
 pf_loc <- get_folder_path(fld_str = "project-files") # project-files folder location (for current Seven Bridges environment)
-data_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERPediatricCongenital_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricCongenital_REDCap_{dm_rt_dt}")
+data_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERPediatricCongenital_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVREPediatricCongenital_REDCap_{dm_rt_dt}")
 
 ds_dd_path <- list.files(data_loc, pattern = "RECOVER.*_DataDictionary_.*.csv")
 ds_dd <- read_csv(file.path(data_loc, ds_dd_path)) %>% dd_prep_col_nms()
@@ -127,8 +127,7 @@ core <- core_initial %>%
               filter(!na_or_blank(visit_agemoreal)) %>% 
               filter(row_number() == 1, .by = record_id), 
             by = join_by(record_id)) %>%
-  mutate(dob = visit_dt - (visit_agemoreal * 30.4375), 
-         enrolled = (enrl_consyn %in% 1) & (tolower(substr(record_id, 4, 4)) != "s"), 
+  mutate(enrolled = (enrl_consyn %in% 1) & (tolower(substr(record_id, 4, 4)) != "s"), 
          study_grpp = factor(case_when(
            is.na(enrl_cgcovidpreg) ~ study_grp_levs["PE"],
            T ~ ifelse(enrl_cgcovidpreg %in% 1, study_grp_levs["CE"], study_grp_levs["NE"])),
@@ -139,9 +138,9 @@ core <- core_initial %>%
          enrl_reftype_f = cong_afmts$enrl_reftype(enrl_reftype)) %>% 
   left_join(core_adult_full, by = "enrl_cgid") %>%
   mutate(across(has_parent, \(x) replace_na(x, F)), #include these first 5
-         pvacc_at_preg = factor(parent_first_vacc_dt < dob, c(T, F), c("Yes", "No")),
+         pvacc_at_preg = factor(parent_first_vacc_dt < demo_dob, c(T, F), c("Yes", "No")),
          pvacc_at_pregd = fact_fact01n(pvacc_at_preg, "Yes", "Parent Vaccinated"),
-         days_pinf_dob = as.numeric(dob - parent_infdt),
+         days_pinf_dob = as.numeric(demo_dob - parent_infdt),
          days_pinf_dob_cut = cut(days_pinf_dob/30.4, seq(0, 48), include.lowest = T)
   )
 

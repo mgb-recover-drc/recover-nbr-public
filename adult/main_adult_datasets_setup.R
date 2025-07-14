@@ -4,23 +4,29 @@
 
 # determines the path (relative to the current working directory or a specified path location) to the given folder name
 # NOTE: this function assumes the desired folder is viewable at or above the current directory level
+get_abs_loc <- function(x) system(paste0("cd '", x, "';pwd"), intern = T)
+
 get_folder_path <- function(loc = "", fld_str) {
   if(nchar(loc) > 20) error("Unable to find desired folder")
   all_fls <- list.files(loc)
   if(fld_str %in% all_fls) {
-    return(file.path(loc, fld_str))
+    return(get_abs_loc(file.path(loc, fld_str)))
   } else {
     get_folder_path(paste0(loc, "../"), fld_str)
   }
 }
 
 sbgenomics_path <- get_folder_path(fld_str = "sbgenomics")
-setwd(paste0(sbgenomics_path, "/project-files/code/"))
+set_resp <- tryCatch(setwd(paste0(sbgenomics_path, "/project-files/code/")), error= function(e) "Likely an internal run")
+
+if(set_resp == "Likely an internal run"){
+  repo_top_loc <- gsub("recover-nbr.+", "recover-nbr", getwd())
+  setwd(repo_top_loc)
+}
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
-
-bargs <- getArgs(defaults = list(dt = "20241205"))
+bargs <- getArgs(defaults = list(dt = "20250305", add_log=0))
 
 # check for whether RDs objects already exist in this project's
 if(length(list.files(paste0("../DM/adult/", bargs$dt))) > 0) stop(glue("RDS objects already in existing project - delete RDS files from project-files/DM/adult/{bargs$dt}"))
@@ -31,6 +37,20 @@ dm_rt_dt_y <- substr(dm_rt_dt, 1, 4)
 dm_rt_dt_m <- substr(dm_rt_dt, 5, 6)
 
 pf_loc <- get_folder_path(fld_str = "project-files") # project-files folder location (for current Seven Bridges environment)
+
+
+dm_dir <- glue("{gsub('project-files$', 'output-files', pf_loc)}/DM/adult/{dm_rt_dt}")
+if(!file.exists(dm_dir)) dir.create(dm_dir, recursive = T)
+
+if(bargs$add_log == 1){
+  log_loc <- file.path(dm_dir, "adult_run.log")
+  cat(glue("-------- for run info check log file at {log_loc} ----- \n\n"))
+  sf <- file(log_loc, open = "wt")
+  sink(sf, split = T)
+  sink(sf, type = "message")
+  cat(glue("------------------- adult run log file - {format(Sys.time(), '%H:%M')} ------------------- \n\n"))
+}
+
 data_loc <- glue("{pf_loc}/RECOVERAdult_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERAdult_REDCap_{dm_rt_dt}")
 
 ds_dd_path <- list.files(data_loc, pattern = "RECOVER.*_DataDictionary_.*.csv")
@@ -38,10 +58,38 @@ ds_dd <- read_csv(file.path(data_loc, ds_dd_path)) %>% dd_prep_col_nms()
 ds_dd$choices.calculations.or.slider.labels[ds_dd$vr.name=="race"] <- paste(sapply(strsplit(ds_dd$choices.calculations.or.slider.labels[ds_dd$vr.name=="race"], "\\|"),
                                                                                    function(x) str_replace_all(str_replace_all(x, "<br>.+", ""), "\\[sname\\]", "me")), collapse="|")
 
-ds_fdata <- read.csv(file.path(data_loc, "RECOVER_Adult_redcap_data.tsv"), 
-                     colClasses="character", sep = "\t") %>%
-  mutate(across(everything(), ~ conv_prop_type(.x, cur_column()))) %>% 
+
+ds_fdata_raw <- read.csv(file.path(data_loc, "RECOVER_Adult_redcap_data.tsv"), 
+                         colClasses="character", sep = "\t")
+
+ds_fdata <- ds_fdata_raw %>%
+  mutate(across(everything(), ~ conv_prop_type(.x, cur_column()))) %>%
   select(-any_of("redcap_survey_identifier"))
+
+id_vrs <- c("record_id", "redcap_event_name", "redcap_repeat_instrument", "redcap_repeat_instance") # all of the variables used to identify a specific form instance for a participant
+# all_variable_names <- names(ds_fdata)
+# all_numeric_type_vrbs <- ds_dd %>% 
+#   filter((field.type %in% "calc") | (text.validation.type.or.show.slider.number %in% c("number", "integer"))) %>% 
+#   pull(vr.name)
+
+# num_chr_conv_issues_by_form <- lapply(unique(ds_dd$form.name), function(form) {
+#     
+#   form_vrs <- ds_dd %>% filter(form.name == form) %>% pull(vr.name)
+#   vrbs_to_select <- c(id_vrs, intersect(form_vrs, all_numeric_type_vrbs))
+#   
+#   if(length(vrbs_to_select) == 4) return()
+#   
+#   ds_fdata_raw %>% 
+#     select(all_of(vrbs_to_select)) %>% 
+#     pivot_longer(cols = -all_of(c(id_vrs)), 
+#                  names_to = "variable", 
+#                  values_to = "value") %>% 
+#     mutate(value_conv_num = as.numeric(value)) %>% 
+#     filter((!na_or_blank(value)) & (is.na(value_conv_num)))
+#   
+# })
+# 
+# ds_num_chr_issues <- Reduce(function(x, y) bind_rows(x, y), num_chr_conv_issues_by_form)
 
 event_map_path <- list.files(data_loc, pattern="RECOVER.*_eventmap_.*.csv") 
 all_rc_forms_event_map <- read_csv(file.path(data_loc, event_map_path))
@@ -49,8 +97,6 @@ repeat_forms_path <- list.files(data_loc, pattern="RECOVER.*_repeatforms_.*.csv"
 repeated_rc_forms <- unique(read_csv(file.path(data_loc, repeat_forms_path)) %>% pull(form_name))
 
 # Essential datasets creation (formds_list, core, etc.) ----
-
-id_vrs <- c("record_id", "redcap_event_name", "redcap_repeat_instrument", "redcap_repeat_instance") # all of the variables used to identify a specific form instance for a participant
 
 # formds_list: a list of datasets where each one corresponds to all the data in REDCap for a specific form (across all instances)
 
@@ -241,8 +287,6 @@ acute_reinf_extra <- formds_list$biospecimens %>%
 
 # add additional variables to core
 core <- core_initial %>% 
-  left_join(formds_list$visit_form %>% filter(redcap_event_name %in% "baseline_arm_1") %>% select(record_id, age_enroll = visit_age), 
-            by = join_by(record_id)) %>%
   left_join(eop_withdraw_info, by = "record_id") %>%
   left_join(antibody_lab_results %>%
               filter(redcap_event_name == "baseline_arm_1") %>%
@@ -265,6 +309,8 @@ core <- core_initial %>%
                                  T ~ 0),
     infect_yn_anti_f = factor(case_when(move_to_infected == 1 ~ "Infected",
                                         T ~ as.character(infect_yn_f)), levels = c("Infected", "Uninfected")),
+    infect_yn_xanti_f = factor(case_when(enrl_immunophenotype == 1 ~ "Infected",
+                                         T ~ as.character(infect_yn_anti_f)), levels = c("Infected", "Uninfected")),
     acute_reinf_x = record_id %in% acute_reinf_extra$record_id, 
     enrolled = (cons_yn %in% 1) & !startsWith(site, "S"),
     study_grp = case_when_fcte(
@@ -287,6 +333,7 @@ core <- core_initial %>%
       race___4 == 0 ~ 0, 
       race___4 == 1 ~ 1, 
     ), c(1, 0), c("Yes", "No")),
+    age_enroll = round(as.numeric(enroll_dt - as.Date(dob))/365.25, digits = 2),
     age_enrl_cat_f = factor(case_when(                                           
       age_enroll >= 18 & age_enroll < 46 ~ 1, 
       age_enroll >= 46 & age_enroll < 66 ~ 2, 
@@ -726,7 +773,7 @@ get_ps_pc <- function(fdsl, afmts){
                                             vis_spec_rd, vis_spec_dep, driv, vfq_12recode, vfq_10recode)), mean_fxn))  %>%
     # SAQ Scoring subscales, totals, etc. 
     mutate(across(c(saq_actwalk_re = "saq_actwalk", saq_actgarden_re = "saq_actgarden", saq_actlift_re = "saq_actlift"), 
-                  na_if, 6)) %>%
+                  \(x) na_if(x, 6))) %>%
     mutate(SAQ_PL = ((saq_actwalk_re + saq_actgarden_re + saq_actlift_re) - 3) / 15 * 100,
            SAQ_PL_Cat = case_when(
              SAQ_PL <= 24 ~ "Poor",
@@ -821,31 +868,32 @@ get_ps_pc <- function(fdsl, afmts){
                                    NQOL_CF_Tscore < 35 ~ "Normal Cognitive Function")) %>%
     # SHOW-Q Scoring variables, scales, etc.
     # note: keeping the below _re variable definitions because recode RC variables are a little off 
-    mutate(across(c(showq_6, showq_7, showq_9), recode, 
-                  `1` = 100, `2` = 200/3, `3` = 100/3, `4` = 0, .default = as.numeric(NA),
+    mutate(across(c(showq_6, showq_7, showq_9), 
+                  \(x) recode(x,  
+                              `1` = 100, `2` = 200/3, `3` = 100/3, `4` = 0, .default = as.numeric(NA)),
                   .names="{.col}_re"),
            showq_sat = case_when(
-             !is.na(showq_2recode) ~ rowMeans(across(c(showq_2recode, showq_1recode)), na.rm = T),
+             !is.na(showq_2recode) ~ rowMeans(pick(c(showq_2recode, showq_1recode)), na.rm = T),
              is.na(showq_2recode)  ~ showq_1recode),
-           showq_org = rowMeans(across(c(showq_3recode, showq_4recode, showq_5_re, showq_6_re)), na.rm=T),
-           showq_des = case_when(if_all(c(showq_7_re, showq_9_re), ~ !is.na(.)) ~ rowMeans(across(c(showq_7_re, showq_8recode, showq_9_re)), na.rm=T),
+           showq_org = rowMeans(pick(c(showq_3recode, showq_4recode, showq_5_re, showq_6_re)), na.rm=T),
+           showq_des = case_when(if_all(c(showq_7_re, showq_9_re), ~ !is.na(.)) ~ rowMeans(pick(c(showq_7_re, showq_8recode, showq_9_re)), na.rm=T),
                                  if_all(c(showq_7_re, showq_9_re), ~ is.na(.)) ~ showq_8recode),
-           showq_pel = rowMeans(across(c(showq_10recode, showq_11recode, showq_12recode)), na.rm=T),
+           showq_pel = rowMeans(pick(c(showq_10recode, showq_11recode, showq_12recode)), na.rm=T),
            showq_total = case_when(if_all(c(showq_2recode, showq_3recode, showq_4recode, showq_5_re, showq_6_re, showq_7_re, showq_9_re), ~ !is.na(.))
-                                   ~ rowMeans(across(c(showq_1recode, showq_2recode, showq_3recode, showq_4recode, showq_5_re, showq_6_re, showq_7_re, showq_8recode, showq_9_re,
-                                                       showq_10recode, showq_11recode, showq_12recode)), na.rm=T),
+                                   ~ rowMeans(pick(c(showq_1recode, showq_2recode, showq_3recode, showq_4recode, showq_5_re, showq_6_re, showq_7_re, showq_8recode, showq_9_re,
+                                                     showq_10recode, showq_11recode, showq_12recode)), na.rm=T),
                                    if_all(c(showq_2recode, showq_3recode, showq_4recode, showq_5_re, showq_6_re, showq_7_re, showq_9_re), 
-                                          ~ is.na(.)) ~ rowMeans(across(c(showq_1recode, showq_8recode, showq_10recode, showq_11recode, showq_12recode)), na.rm=T))) %>%
+                                          ~ is.na(.)) ~ rowMeans(pick(c(showq_1recode, showq_8recode, showq_10recode, showq_11recode, showq_12recode)), na.rm=T))) %>%
     # UCLA Prostate Cancer variables, totals, etc. 
     mutate(ucla_pci_ans = pmap_int(across(all_of(pro_vrs)), ~ sum(!is.na(c(...)))),
-           ucla_pci_sum = case_when(ucla_pci_ans > 4 ~ rowMeans(across(c(uclapros_1recode, uclapros_2recode, uclapros_3recode, 
-                                                                         uclapros_4recode, uclapros_5recode, uclapros_6recode, 
-                                                                         uclapros_7recode, uclapros_8recode)), na.rm = T))) %>%
+           ucla_pci_sum = case_when(ucla_pci_ans > 4 ~ rowMeans(pick(c(uclapros_1recode, uclapros_2recode, uclapros_3recode, 
+                                                                       uclapros_4recode, uclapros_5recode, uclapros_6recode, 
+                                                                       uclapros_7recode, uclapros_8recode)), na.rm = T))) %>%
     # Michigan Neuropathy scoring totals, etc.
-    mutate(mi_neuro_sum = rowSums(across(c(mi_neuro1recode, mi_neuro2recode, mi_neuro3recode, mi_neuro5recode, 
-                                           mi_neuro6recode, mi_neuro7recode, mi_neuro8recode, mi_neuro9recode, 
-                                           mi_neuro11recode, mi_neuro12recode, mi_neuro13recode, mi_neuro14recode, 
-                                           mi_neuro15recode))),
+    mutate(mi_neuro_sum = rowSums(pick(c(mi_neuro1recode, mi_neuro2recode, mi_neuro3recode, mi_neuro5recode, 
+                                         mi_neuro6recode, mi_neuro7recode, mi_neuro8recode, mi_neuro9recode, 
+                                         mi_neuro11recode, mi_neuro12recode, mi_neuro13recode, mi_neuro14recode, 
+                                         mi_neuro15recode))),
            mi_neuro_cat = case_when(mi_neuro_sum < 7 ~ "Normal",
                                     mi_neuro_sum <= 15 ~ "Abnormal")) %>%
     # PROMIS physical function SF4a scoring variables
@@ -855,7 +903,7 @@ get_ps_pc <- function(fdsl, afmts){
     # Snoring and PROMIS sleep disturbance 8a scoring variables
     # note: leaving these _re variables definitions because there are no corresponding recode variables in RC
     mutate(across(c(promis_sleep109, promis_sleep116, promis_sleep115), 
-                  recode, `1` = 5, `2` = 4, `3` = 3, `4` = 2, `5` = 1,
+                  \(x) recode(x, `1` = 5, `2` = 4, `3` = 3, `4` = 2, `5` = 1),
                   .names="{.col}_re"),
            promis_sleepdist_sf8a_raw = promis_sleep109_re + promis_sleep116_re + promis_sleep20 + promis_sleep44 + 
              promis_sleep108 + promis_sleep72 + promis_sleep67 + promis_sleep115_re) %>%
@@ -1253,69 +1301,69 @@ compass_df <- lapply(c("ps_goofy", "ps_color", "ps_drymouth"), addRowSum, df = p
 #' additional summary scores generated
 
 ps_combined_pheno <- ps_now_list$wide %>%
-  bind_rows(ps_nowfu_list$wide) %>%
+  bind_rows(ps_nowfu_list$wide) %>% 
   select(-pain_sum, -nerve_sum) %>%
-  mutate(across(everything(), as.character)) %>%
-  pivot_longer(-c(record_id, redcap_event_name, ps_colldt),
-               names_to = "symp", values_to = "now") %>%
-  left_join(compass_df %>%
-              select(record_id, redcap_event_name, compass_score),
+  mutate(across(-c(record_id, redcap_event_name, ps_colldt), as.character)) %>% 
+  pivot_longer(-c(record_id, redcap_event_name, ps_colldt), 
+               names_to = "symp", values_to = "now") %>% 
+  left_join(compass_df %>% 
+              select(record_id, redcap_event_name, compass_score), 
             by = c("record_id", "redcap_event_name")) %>%
   left_join(ps_before_list$long %>% select(-c(redcap_event_name, ps_colldt)), by = c("record_id", "symp")) %>%
   left_join(ps_around_list$long %>% select(-c(redcap_event_name, ps_colldt)), by = c("record_id", "symp")) %>%
   left_join(ps_aft30d_list$long %>% select(-c(redcap_event_name, ps_colldt)), by = c("record_id", "symp")) %>%
-  left_join(ps_funl_list$long %>% select(-ps_colldt), by = c("record_id", "redcap_event_name", "symp")) %>%
-  left_join(formds_list$pasc_symptoms_pc %>%
-              select(record_id, redcap_event_name, promis_global04, promis_global06,
+  left_join(ps_funl_list$long %>% select(-ps_colldt), by = c("record_id", "redcap_event_name", "symp")) %>% 
+  left_join(formds_list$pasc_symptoms_pc %>% 
+              select(record_id, redcap_event_name, promis_global04, promis_global06, 
                      promis_global07, promis_global08, gad7_total, gad7_total_cat,
-                     phq8_total, hit6_total, mmrc_dyspnea, NQOL_CF_Tscore, phq2_total,
-                     gad2_total, phq9_total, promis_sleepdist_sf8a_Tscore,
-                     snore, mi_neuro_sum, mi_neuro_sum, NQOL_UEF_raw, promis_pf_sf4a_raw,
-                     vfq_25_score, saq_sumscore,
+                     phq8_total, hit6_total, mmrc_dyspnea, NQOL_CF_Tscore, phq2_total, 
+                     gad2_total, phq9_total, promis_sleepdist_sf8a_Tscore, 
+                     snore, mi_neuro_sum, mi_neuro_sum, NQOL_UEF_raw, promis_pf_sf4a_raw, 
+                     vfq_25_score, saq_sumscore, 
                      promis_global01, promis_global02, promis_global03,
-                     promis_sleep116),
+                     promis_sleep116), 
             by = c("record_id", "redcap_event_name")) %>%
   mutate(now_not_b4 = factor(case_when(now == "Yes" & before == "No" ~ "Yes",
-                                       now == "Yes" & before == "Yes" ~ NA_character_,
+                                       now == "Yes" & before == "Yes" ~ NA_character_, 
                                        now == "Yes" & is.na(before) ~ NA_character_,
-                                       now == "No" & before == "Yes" ~ NA_character_,
-                                       now == "No" & before == "No" ~ "No",
-                                       now == "No" & is.na(before) ~ NA_character_,
-                                       T ~ NA_character_), levels = c("Yes", "No")),
-         any_yes = factor(case_when(now == "Yes" | aft30d == "Yes" | funl == "Yes" ~ "Yes",
-                                    is.na(now) & is.na(aft30d) & is.na(funl) ~ NA_character_,
-                                    T ~ "No"), levels = c("Yes", "No")),
+                                       now == "No" & before == "Yes" ~ NA_character_, 
+                                       now == "No" & before == "No" ~ "No", 
+                                       now == "No" & is.na(before) ~ NA_character_, 
+                                       T ~ NA_character_), levels = c("Yes", "No")), 
+         any_yes = factor(case_when(now == "Yes" | aft30d == "Yes" | funl == "Yes" ~ "Yes", 
+                                    is.na(now) & is.na(aft30d) & is.na(funl) ~ NA_character_, 
+                                    T ~ "No"), levels = c("Yes", "No")), 
          any_yes_notb4 = factor(case_when(any_yes == "Yes" & before == "No" ~ "Yes",
                                           any_yes == "Yes" & before == "Yes" ~ NA_character_,
-                                          any_yes == "Yes" & is.na(before) ~ NA_character_,
-                                          any_yes == "No" & before == "Yes" ~ NA_character_,
-                                          any_yes == "No" & before == "No" ~ "No",
-                                          any_yes == "No" & is.na(before) ~ NA_character_,
+                                          any_yes == "Yes" & is.na(before) ~ NA_character_, 
+                                          any_yes == "No" & before == "Yes" ~ NA_character_, 
+                                          any_yes == "No" & before == "No" ~ "No", 
+                                          any_yes == "No" & is.na(before) ~ NA_character_, 
                                           T ~ NA_character_), levels = c("Yes", "No"))) %>%
-  mutate(now_not_b4_f = factor(ifelse(before == "Yes", "Pre-existing", as.character(now_not_b4)),
+  mutate(now_not_b4_f = factor(ifelse(before == "Yes", "Pre-existing", as.character(now_not_b4)), 
                                levels = c("Yes", "No", "Pre-existing"))) %>%
-  pivot_wider(names_from = symp, names_glue = "{symp}___{.value}",
-              values_from = c(before, around, now, now_not_b4_f, now_not_b4,
+  pivot_wider(names_from = symp, names_glue = "{symp}___{.value}", 
+              values_from = c(before, around, now, now_not_b4_f, now_not_b4, 
                               any_yes, any_yes_notb4, funl, aft30d)) %>%
-  mutate(ps_anxiety___now = case_when(gad7_total >= 10 ~ "Yes",
-                                      T ~ "No"),
-         ps_depress___now = case_when(pmax(phq8_total, phq9_total,
-                                           na.rm = T) >= 10 ~ "Yes",
-                                      T ~ "No"),
-         ps_sleepapnea___now = case_when(ps_sleep___now == "Yes" &
-                                           snore == 1 ~ "Yes",
-                                         is.na(ps_sleep___now) ~ NA_character_,
-                                         T ~ "No"),
-         ps_sleepdist___now = case_when(ps_sleep___now == "Yes" &
-                                          promis_sleepdist_sf8a_Tscore >= 60 ~ "Yes",
-                                        is.na(ps_sleep___now) ~ NA_character_,
+  mutate(ps_anxiety___now = case_when(gad7_total >= 10 ~ "Yes", 
+                                      T ~ "No"), 
+         ps_depress___now = case_when(pmax(phq8_total, phq9_total, 
+                                           na.rm = T) >= 10 ~ "Yes", 
+                                      T ~ "No"), 
+         ps_sleepapnea___now = case_when(ps_sleep___now == "Yes" & 
+                                           snore == 1 ~ "Yes", 
+                                         is.na(ps_sleep___now) ~ NA_character_, 
+                                         T ~ "No"), 
+         ps_sleepdist___now = case_when(ps_sleep___now == "Yes" & 
+                                          promis_sleepdist_sf8a_Tscore >= 60 ~ "Yes", 
+                                        is.na(ps_sleep___now) ~ NA_character_, 
                                         T ~ "No"),
          ps_anxiety___before = case_when(ps_mood___before == "Yes" ~ "Yes",
                                          ps_mood___before == "No" ~ "No",
-                                         T ~ NA_character_),
+                                         T ~ NA_character_), 
          ps_depress___before = case_when(ps_mood___before == "Yes" ~ "Yes",
                                          ps_mood___before == "No" ~ "No",
-                                         T ~ NA_character_),
+                                         T ~ NA_character_), 
          ps_sleepapnea___before = case_when(ps_sleep___before == "Yes" ~ "Yes",
                                             ps_sleep___before == "No" ~ "No",
                                             T ~ NA_character_),
@@ -1323,60 +1371,59 @@ ps_combined_pheno <- ps_now_list$wide %>%
                                            ps_sleep___before == "No" ~ "No",
                                            T ~ NA_character_)) %>%
   mutate(across(ends_with("___now"), \(x) factor(x, c("Yes", "No"))),
-         across(ends_with("___now"), \(x) x, .names="{.col}_sev")) %>%
-  now_add_sev("ps_fatigue", promis_global08 >= 3) %>%
-  now_add_sev("ps_mood", gad7_total >= 10 | phq8_total >= 10 | phq9_total >= 10) %>%
-  now_add_sev("pain_head", hit6_total >= 55) %>%
-  now_add_sev("ps_headache", hit6_total >= 55) %>%
-  now_add_sev("ps_headachec", hit6_total >= 55) %>%
-  now_add_sev("pain_chest", saq_sumscore < 75) %>%
-  now_add_sev("ps_sob", mmrc_dyspnea >= 2) %>%
-  now_add_sev("ps_think", NQOL_CF_Tscore <= 40) %>%
-  now_add_sev("nerve_numb", mi_neuro_sum > 6) %>%
-  now_add_sev("ps_sleep", snore == 1 | promis_sleepdist_sf8a_Tscore >= 60) %>%
-  now_add_sev("ps_weak", NQOL_UEF_raw <= 37 | promis_pf_sf4a_raw <= 14) %>%
+         across(ends_with("___now"), \(x) x, .names="{.col}_sev")) %>% 
+  now_add_sev("ps_fatigue", promis_global08 >= 3) %>% 
+  now_add_sev("ps_mood", gad7_total >= 10 | phq8_total >= 10 | phq9_total >= 10) %>% 
+  now_add_sev("pain_head", hit6_total >= 55) %>% 
+  now_add_sev("ps_headache", hit6_total >= 55) %>% 
+  now_add_sev("ps_headachec", hit6_total >= 55) %>% 
+  now_add_sev("pain_chest", saq_sumscore < 75) %>% 
+  now_add_sev("ps_sob", mmrc_dyspnea >= 2) %>% 
+  now_add_sev("ps_think", NQOL_CF_Tscore <= 40) %>% 
+  now_add_sev("nerve_numb", mi_neuro_sum > 6) %>% 
+  now_add_sev("ps_sleep", snore == 1 | promis_sleepdist_sf8a_Tscore >= 60) %>% 
+  now_add_sev("ps_weak", NQOL_UEF_raw <= 37 | promis_pf_sf4a_raw <= 14) %>% 
   now_add_sev("ps_vision", vfq_25_score < 75) %>%
   mutate(tl_symp_sum = psum(across(any_of(paste0(tl_symp_vrs, "___now")), \(x) x=="Yes")),
          tl_symp_sum_sev = psum(across(any_of(paste0(tl_symp_vrs, "___now_sev")), \(x) x=="Yes")),
          tl_symp_inc_sum = psum(across(any_of(paste0(tl_symp_vrs, "___now_not_b4")), \(x) x=="Yes")),
-         hit6_miss = is.na(hit6_total) & pain_head___now == "Yes",
-         mmrc_miss = is.na(mmrc_dyspnea) & ps_sob___now == "Yes",
-         nqol_cf_miss = is.na(NQOL_CF_Tscore) &
-           (ps_think___now == "Yes" |
-              promis_global04 %in% c(1,2)),
-         phq8_miss = is.na(phq8_total) & phq2_total >= 3,
-         gad7_miss = is.na(gad7_total) & gad2_total >= 3,
-         clus_excl = hit6_miss | mmrc_miss | nqol_cf_miss |
-           phq8_miss | gad7_miss | is.na(promis_global06) |
+         hit6_miss = is.na(hit6_total) & pain_head___now == "Yes", 
+         mmrc_miss = is.na(mmrc_dyspnea) & ps_sob___now == "Yes", 
+         nqol_cf_miss = is.na(NQOL_CF_Tscore) & 
+           (ps_think___now == "Yes" | 
+              promis_global04 %in% c(1,2)), 
+         phq8_miss = is.na(phq8_total) & phq2_total >= 3, 
+         gad7_miss = is.na(gad7_total) & gad2_total >= 3, 
+         clus_excl = hit6_miss | mmrc_miss | nqol_cf_miss | 
+           phq8_miss | gad7_miss | is.na(promis_global06) | 
            is.na(promis_global07) | is.na(promis_global08),
-         promis12_yn = promis_global01 %in% c(1,2) |
+         promis12_yn = promis_global01 %in% c(1,2) | 
            promis_global02 %in% c(1,2),
-         promis_1234_yn = promis_global01 %in% c(1,2) |
-           promis_global02 %in% c(1,2) |
-           promis_global03 %in% c(1,2) |
+         promis_1234_yn = promis_global01 %in% c(1,2) | 
+           promis_global02 %in% c(1,2) | 
+           promis_global03 %in% c(1,2) | 
            promis_global04 %in% c(1,2),
          # promis_global06_yn = promis_global06 %in% c(1,2),
          # promis_global08_yn = promis_global08 %in% c(4,5),
          nqol_yn = NQOL_CF_Tscore <= 40,
          dys_yn = compass_score > 20,
-         cp_sum = psum((ps_sob___now == "Yes" & mmrc_dyspnea >= 2),
-                       ps_cough___now == "Yes", (ps_sleep___now == "Yes" & snore == 1),
-                       ps_heart___now == "Yes", pain_chest___now == "Yes",
-                       ps_swelllegs___now == "Yes"),
-         musc_sum = psum(ps_weak___now == "Yes", pain_joint___now_sev == "Yes",
-                         pain_muscle___now_sev == "Yes",
-                         pain_back___now_sev == "Yes"),
-         neuro_sum = psum(ps_think___now_sev == "Yes", ps_sense___now == "Yes",
-                          ps_nerve___now == "Yes", pain_head___now_sev == "Yes",
+         cp_sum = psum((ps_sob___now == "Yes" & mmrc_dyspnea >= 2), 
+                       ps_cough___now == "Yes", (ps_sleep___now == "Yes" & snore == 1), 
+                       ps_heart___now == "Yes", pain_chest___now == "Yes", 
+                       ps_swelllegs___now == "Yes"), 
+         musc_sum = psum(ps_weak___now == "Yes", pain_joint___now_sev == "Yes", 
+                         pain_muscle___now_sev == "Yes", 
+                         pain_back___now_sev == "Yes"), 
+         neuro_sum = psum(ps_think___now_sev == "Yes", ps_sense___now == "Yes", 
+                          ps_nerve___now == "Yes", pain_head___now_sev == "Yes", 
                           gad7_total > 9, phq8_total > 9),
          cp_yn = cp_sum >= 1 & promis12_yn,
          musc_yn = musc_sum >= 1 & promis12_yn,
          neuro_yn = neuro_sum >= 1 & promis12_yn,
          nosymps_yn = tl_symp_sum == 0) %>%
-  mutate(across(ends_with("_yn"), ~ factor(.x,
-                                           levels = c("TRUE", "FALSE"),
+  mutate(across(ends_with("_yn"), ~ factor(.x, 
+                                           levels = c("TRUE", "FALSE"), 
                                            labels = c("Yes", "No"))))
-
 
 pasc_gen_fxn <- function(pds) {
   
@@ -1399,15 +1446,68 @@ pasc_gen_fxn <- function(pds) {
     'bald'         , 'ps_bald___now_sev'      , 0 , NA
   )
   
+  ## Note that cluster numbers are not consistent over years
+  cluster_cents <- tribble(
+    ~year , ~cl , ~ps_sense  , ~ps_malaise , ~ps_cough , ~ps_think   , ~ps_sob   , ~ps_heart , ~ps_goofy , ~pain_chest , ~ps_fatigue , ~ps_thirst , ~ps_sleepapnea , ~nerve_abmove , ~ps_sleepdist , ~ps_gastro , ~ps_sex   , ~ps_bald,
+    2023  , 1   , 0.99580713 , 0.5471698   , 0.3312369 , 0.375262055 , NA        , 0.3752621 , 0.3144654 , 0.1341719   , 0.6582809   , 0.2976939  , NA             , 0.04821803    , NA            , 0.4234801  , 0.2935010 , 0.2872117,
+    2023  , 2   , 0.02962963 , 0.9876543   , 0.4296296 , 0.002469136 , NA        , 0.5925926 , 0.5629630 , 0.2641975   , 0.8370370   , 0.4814815  , NA             , 0.10123457    , NA            , 0.6000000  , 0.3308642 , 0.3111111,
+    2023  , 3   , 0.06473595 , 0.9931857   , 0.1618399 , 1.000000000 , NA        , 0.4378194 , 0.6183986 , 0.1396934   , 0.9369676   , 0.2027257  , NA             , 0.08177172    , NA            , 0.4480409  , 0.3458262 , 0.2095400,
+    2023  , 4   , 0.53380783 , 0.9430605   , 0.4323843 , 0.935943060 , NA        , 0.8594306 , 0.9377224 , 0.5035587   , 0.9430605   , 0.6174377  , NA             , 0.32740214    , NA            , 0.8825623  , 0.6619217 , 0.5889680,
+    2024  , 1   , 1.00000000 , 0.5326531   , 0.3306122 , 0.283673469 , 0.1816327 , 0.4142857 , 0.3979592 , 0.1265306   , 0.6591837   , 0.2591837  , 0.2591837      , 0.04285714    , 0.1183673     , NA         , NA        , NA,
+    2024  , 2   , 0.09210526 , 0.9429825   , 1.0000000 , 0.171052632 , 0.3245614 , 0.3815789 , 0.3771930 , 0.1710526   , 0.8114035   , 0.3245614  , 0.3070175      , 0.05701754    , 0.1447368     , NA         , NA        , NA,
+    2024  , 3   , 0.21184510 , 0.9863326   , 0.1389522 , 0.997722096 , 0.2369021 , 0.0000000 , 0.7015945 , 0.1138952   , 0.9248292   , 0.3143508  , 0.4806378      , 0.09111617    , 0.3621868     , NA         , NA        , NA,
+    2024  , 4   , 0.10903874 , 0.9870875   , 0.1176471 , 0.645624103 , 0.3357245 , 0.9196557 , 0.7130560 , 0.2123386   , 0.9038737   , 0.2682927  , 0.3199426      , 0.13055954    , 0.2596844     , NA         , NA        , NA,
+    2024  , 5   , 0.53750000 , 0.9250000   , 0.5145833 , 0.879166667 , 0.7979167 , 0.8791667 , 0.9354167 , 0.6875000   , 0.9541667   , 0.7104167  , 0.5562500      , 0.34583333    , 0.6500000     , NA         , NA        , NA,
+  )
+  
+  clus_vrs <- setdiff(names(cluster_cents), c("year", "cl"))
+  
+  eucl_dist_fxn <- function(ds){
+    sqrt(sum(ds$diff ^ 2, na.rm=T))
+  }
+  
+  fxndat0 <- pds %>%
+    filter(!is.na(ps_colldt)) %>% 
+    rename_with(~ gsub("___now_sev", "", .x), matches("___now_sev")) %>%
+    select(record_id, redcap_event_name, pasc_dt = ps_colldt, all_of(clus_vrs)) %>%
+    mutate(across(-c(record_id, redcap_event_name, pasc_dt), ~ as.numeric(.x == "Yes"))) %>% 
+    pivot_longer(cols=-c(record_id, redcap_event_name, pasc_dt),
+                 names_to="ps_vr", values_to="ps_val") %>% 
+    left_join(cluster_cents %>% 
+                pivot_longer(-c(year, cl),
+                             names_to="ps_vr", values_to="cent_val"),
+              by = join_by(ps_vr),
+              relationship = "many-to-many") %>% 
+    mutate(sq_diff = (replace_na(ps_val, 0) - cent_val) ^ 2)
+  
+  fxndat <- fxndat0 %>% 
+    summarise(eucl_dist = sqrt(sum(sq_diff, na.rm=T)),
+              .by=c(record_id, redcap_event_name, pasc_dt, year, cl)) %>% 
+    arrange(record_id, pasc_dt, redcap_event_name, year, eucl_dist)
+  
+  
+  fxndat_summ <- fxndat %>% 
+    filter(row_number() == 1, 
+           .by=c(record_id, redcap_event_name, year))
+  
+  fxndat_wide <- fxndat_summ %>% 
+    select(record_id, redcap_event_name, year, cl) %>% 
+    pivot_wider(names_from=year, values_from= cl,
+                names_prefix = "pasc_cc_")
+  
+  
   jama_scoring_cutoff <- tribble(
     ~scr_version, ~cutoff,
     "jp2023", 12, 
     "jp2024", 11
   ) %>% 
     mutate(across(cutoff, as.numeric))
-  sym_id_vrs <- c('record_id', 'redcap_event_name')
+  
+  sym_id_vrs_rnm <- c('record_id', 'redcap_event_name', pasc_dt= "ps_colldt")
+  sym_id_vrs <- c('record_id', 'redcap_event_name', 'pasc_dt')
   symps_pasc_scores <- pds %>% 
-    select(all_of(c(sym_id_vrs, setNames(jama_scoring$vr, jama_scoring$nm)))) %>% 
+    filter(!is.na(ps_colldt)) %>% 
+    select(all_of(c(sym_id_vrs_rnm, setNames(jama_scoring$vr, jama_scoring$nm)))) %>% 
     pivot_longer(cols=-all_of(sym_id_vrs),
                  names_to="nm") %>%
     left_join(jama_scoring %>% 
@@ -1416,42 +1516,73 @@ pasc_gen_fxn <- function(pds) {
                              values_to = "scr"), 
               by = join_by(nm),
               relationship = "many-to-many") %>% 
+    mutate(value_sum = (value=="Yes")*scr) %>% 
     summarise(pasc_score = sum((value == "Yes")*scr, na.rm=T),
-              # pasc_score = sum((value == "Yes")*scr),
+              pasc_nvals = sum(!is.na(value_sum)),
               .by=c(scr_version, all_of(sym_id_vrs))) %>% 
     left_join(jama_scoring_cutoff, by = join_by(scr_version)) %>% 
     mutate(pasc_score_tf = pasc_score >= cutoff,
-           # pasc_score_tf = ifelse(!pasc_score_tf_na & is.na(pasc_score), NA, pasc_score_tf_na),
            across(starts_with("pasc_score_tf"), \(x) factor(x, c(T, F), c("Yes", "No")),
                   .names="{gsub('_tf', '_yn', .col)}"),
-           pasc_score3 = case_when(pasc_score == 0 ~ "LC Index 0",
-                                   pasc_score < cutoff ~ glue("LC Index 1-{cutoff-1}"),
+           pasc_score3 = case_when(pasc_score == 0 ~ glue("LC Index 0"),
+                                   pasc_score < cutoff ~ glue("LC Index 1-{cutoff}"),
                                    pasc_score >= cutoff ~ glue("LC Index {cutoff}+")),
            version_n = gsub("jp", "", scr_version)) %>% 
     select(-scr_version) %>% 
     pivot_wider(names_from=version_n, values_from = -c(all_of(sym_id_vrs), version_n)) %>% 
-    rename_with(\(x) gsub("_$", "", x))
+    rename_with(\(x) gsub("_$", "", x)) %>% 
+    left_join(fxndat_wide,
+              by = join_by(record_id, redcap_event_name)) %>% 
+    mutate(across(starts_with("pasc_cc_"), \(x) {
+      pyear <- gsub("pasc_cc_", "", cur_column())
+      pasc_scr_vr = paste0("pasc_score_yn_", pyear)
+      ifelse(.[[pasc_scr_vr]] == "No", "LC Index under cutoff", x)
+    }))
   
   symps_pasc_scores
 }
 
-ps_pasc_ds <- pasc_gen_fxn(ps_combined_pheno)
+# final pasc dataset
+ps_pasc_ds <- pasc_gen_fxn(ps_combined_pheno) %>% 
+  filter(!((is.na(pasc_dt)) & (pasc_nvals_2023 %in% 0) & (pasc_nvals_2024 %in% 0)))
 
 # Saving .rds objects for everything created here
-dm_dir <- glue("{get_folder_path(fld_str='output-files')}/DM/adult/{dm_rt_dt}")
-if(!file.exists(dm_dir)) dir.create(dm_dir, recursive = T)
 
-lapply(ls(), function(obj){
+save_list <- lapply(ls(), function(obj){
+  fdsl_obj <- eval(parse(text = paste0("`", obj, "`")))
   if(obj %in% c("formds_list")) {
-    fdsl_obj <- eval(parse(text = paste0("`", obj, "`")))
     all_forms <- names(fdsl_obj)
     lapply(all_forms, function(fm){
       saveRDS(fdsl_obj[[fm]], file.path(dm_dir, paste0(obj, "_", fm, "_rdsfxnobjhlpr", ".rds")))
     })
   } else {
-    saveRDS(eval(parse(text = paste0("`", obj, "`"))), file.path(dm_dir, paste0(obj, ".rds")))
+    saveRDS(fdsl_obj, file.path(dm_dir, paste0(obj, ".rds")))
   }
+  return(class(fdsl_obj))
 })
 
 
+summ_nums <- lapply(save_list, function(x) data.frame(datasets = "data.frame" %in% x,
+                                                      functions = "function" %in% x,
+                                                      lists = "list" %in% x,
+                                                      other = T)) %>% 
+  bind_rows() %>% 
+  mutate(obj_n = 1:n()) %>% 
+  pivot_longer(cols=-obj_n) %>% 
+  filter(value) %>% 
+  filter(row_number() == 1,
+         .by=obj_n) %>% 
+  summarise(n=n(), .by=name) %>% 
+  mutate(txt= glue("{n} {name}"))
+
+save_txt <- glue("Data includes {paste(summ_nums$txt, collapse=', ')}, and formds_list includes {length(formds_list)} datasets corresponding to REDCap forms")
+
+
+cat(glue("\n\n\n\n------ Data saved in {dm_dir}
+         \n------ {save_txt}
+         \n------ Data was loaded from {dm_rt_dt}
+         \n------ Complete {format(Sys.time(), '%Y%m%d %H:%M')}
+         \n\n"))
+
+closeAllConnections()
 

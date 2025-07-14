@@ -3,13 +3,18 @@ load_libs <- function(add_libs){
   
   lib_load <- sapply(add_libs, function(x) suppressWarnings(do.call("require", list(x))))
   if(any(!lib_load)) {
-    install.packages(add_libs[!lib_load])
-    sapply(add_libs[!lib_load], function(x) suppressWarnings(do.call("require", list(x))))
+    if (any(add_libs %in% "gtsummary" & !lib_load)) {
+      remotes::install_version("gtsummary", "2.0.0", upgrade = "never")
+      suppressWarnings(require(gtsummary))
+    }
+    install.packages(add_libs[!lib_load & add_libs != "gtsummary"])
+    sapply(add_libs[!lib_load & add_libs != "gtsummary"], function(x) suppressWarnings(do.call("require", list(x))))
   }
 }
 
 # list of common libraries/packages to load in
-libs_to_load <- c("tidyverse", "glue", "stringi", "conflicted")
+load_libs("remotes")
+libs_to_load <- c("tidyverse", "glue", "stringi", "conflicted", "data.table")
 
 load_libs(libs_to_load)
 
@@ -404,4 +409,31 @@ mk_labs_comb_long <- function() {
   ds_out
   
 }
+
+this_year = lubridate::year(Sys.Date())
+
+fix_year <- function(x) {
+  num2 <- function(y) as.numeric(stri_sub(as.character(y), -2))
+  case_when(is.na(x) ~ as.numeric(NA),
+            num2(x) <= num2(this_year) & num2(x) >= 19 ~ 2000+num2(x))
+}
+
+fix_month = function(x) {
+  case_when(is.na(x) | is.na(as.numeric(x)) ~ as.numeric(NA),
+            as.numeric(x) >= 0 & as.numeric(x) <= 12 ~ as.numeric(x))
+}
+
+fix_yeardt <- function(ds, vr_pf){
+  dt_chr <- paste0(vr_pf, "_date")
+  ds %>% 
+    mutate(fixdtfxn_yr = fix_year(!!sym(paste0(vr_pf, "_dty"))),
+           fixdtfxn_mn = fix_month(!!sym(paste0(vr_pf, "_dtm"))),
+           fixdtfxn_chr = case_when(is.na(fixdtfxn_yr) ~ as.character(NA),
+                                    is.na(fixdtfxn_mn) ~ paste(fixdtfxn_yr, 6, 1, sep="-"),
+                                    .default = paste(fixdtfxn_yr, fixdtfxn_mn, 1, sep="-")),
+           !!dt_chr := as.Date(fixdtfxn_chr)) %>% 
+    select(-starts_with("fixdtfxn_"))
+  
+}
+
 
