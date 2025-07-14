@@ -20,7 +20,10 @@ setwd(paste0(sbgenomics_path, "/project-files/code/"))
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
 
-bargs <- getArgs(defaults = list(dt = "20240905"))
+bargs <- getArgs(defaults = list(dt = "20241205"))
+
+# check for whether RDs objects already exist in this project's
+if(length(list.files(paste0("../DM/adult/", bargs$dt))) > 0) stop(glue("RDS objects already in existing project - delete RDS files from project-files/DM/adult/{bargs$dt}"))
 
 # load all relevant RECOVER adult REDCap files 
 dm_rt_dt <- bargs$dt 
@@ -51,8 +54,6 @@ id_vrs <- c("record_id", "redcap_event_name", "redcap_repeat_instrument", "redca
 
 # formds_list: a list of datasets where each one corresponds to all the data in REDCap for a specific form (across all instances)
 
-all_dsfdata_ms_vrbs <- c()
-
 formds_list <- nlapply(unique(ds_dd$form.name), function(form) {
   get_cur_form_ds(ds_fdata, form)
 })
@@ -69,6 +70,7 @@ all_single_instance_forms <- all_rc_forms_event_map %>%
 single_instance_form_datasets <- formds_list[all_single_instance_forms] %>%
   lapply(function(cur_df) cur_df %>% 
            select(-all_of(id_vrs[id_vrs != "record_id"])) %>% 
+           select(-form) %>%
            distinct())
 
 
@@ -218,7 +220,7 @@ base_visit_ds <- formds_list$visit_form %>%
 
 # joining all of those single instance form datasets together and joining by the participant ID variables (defined above)
 core_initial <- reduce(single_instance_form_datasets, \(df1, df2) left_join(df1, df2, by = "record_id"))
-  
+
 # acute reinfected dataset that depands on core_initial
 reinf_grp <- core_initial %>% 
   filter(!is.na(enrl_reinfdt) & enroll_dt < as.Date("2022-8-1")) %>% 
@@ -246,148 +248,147 @@ core <- core_initial %>%
               filter(redcap_event_name == "baseline_arm_1") %>%
               select(record_id, Nucleocapsid, Spike), 
             by = "record_id") %>%
-  left_join(vacc_status %>% select(record_id, vacc_base_f), by = "record_id") %>%
+  left_join(vacc_status %>% select(record_id, vacc_base_f, fvacc_index), by = "record_id") %>%
   left_join(base_visit_ds %>% select(record_id, base_visit_dt), 
             by = "record_id") %>%
   mutate(site = substr(record_id, 4, 7)) %>% 
   mutate(# site_curr = coalesce(site_curr_vd, site),  # site_curr_vd uses visit_dag variable, which is not available here
-         withdraw_dt_comb = coalesce(withdraw_dt, eop_form_dt), 
-         withdraw_dt = withdraw_dt_comb, 
-         withdrawn_yn = withdraw_yn %in% 1 | eop_withdrawcalc %in% "(withdrawn)",
-         cohort_c4r = site %in% c("1201", "1202"),
-         preg_cohort = grepl("^RA125|^RA126", record_id), 
-         acute_yn_f = factor(acute_yn, levels = c(1, 0), labels = c("Acute", "Post-Acute")), 
-         infect_yn_f = factor(infect_yn, levels = c(1, 0), labels = c("Infected", "Uninfected")),
-         move_to_infected = case_when(Nucleocapsid == "Positive" & infect_yn_f == "Uninfected" ~ 1,
-                                      Spike == "Positive" & vacc_base_f == "No" & infect_yn_f == "Uninfected" ~ 1,
-                                      T ~ 0),
-         infect_yn_anti_f = factor(case_when(move_to_infected == 1 ~ "Infected",
-                                             T ~ as.character(infect_yn_f)), levels = c("Infected", "Uninfected")),
-         acute_reinf_x = record_id %in% acute_reinf_extra$record_id, 
-         enrolled = (cons_yn %in% 1) & !startsWith(site, "S"),
-         study_grp = case_when_fcte(
-           infect_yn == 1 & acute_yn == 1 ~ study_grp_levs["AI"],
-           infect_yn == 0 & acute_yn == 1 ~ study_grp_levs["AN"],
-           infect_yn == 1 & acute_yn == 0 ~ study_grp_levs["PI"],
-           infect_yn == 0 & acute_yn == 0 ~ study_grp_levs["PN"]
-         ),
-         days_reinf_enr = as.numeric(enroll_dt - enrl_reinfdt),
-         days_reinf_index = as.numeric(enrl_reinfdt - index_dt),
-         acute_reinf_90 = !is.na(enrl_reinfdt) &
-           infect_yn == 1 & 
-           acute_yn == 0 &
-           days_reinf_enr <= 30 & 
-           days_reinf_index > 90 & 
-           enrl_reinf90dayyn %in% 1,
-         timing_index_dt = if_else(acute_reinf_90, enrl_reinfdt, index_dt), 
-         across(c("referral_type", "biosex"), ~ adult_afmts[[cur_column()]](.x), .names = "{.col}_f"), 
-         hispanic_yn_f = factor(case_when(
-           psum(!!!syms(grep("^race___", colnames(core_initial), value = T))) == 0  ~ as.numeric(NA),
-           race___4 == 0 ~ 0, 
-           race___4 == 1 ~ 1, 
-         ), c(1, 0), c("Yes", "No")),
-         age_enrl_cat_f = factor(case_when(                                           
-           age_enroll >= 18 & age_enroll < 46 ~ 1, 
-           age_enroll >= 46 & age_enroll < 66 ~ 2, 
-           age_enroll >= 66 ~ 3, 
-           T ~ NA_real_,
-         ), age_cat_levds$lev, age_cat_levds$lab),
-         vacc_base_tf = vacc_base_f == "Yes", # NOTE: this only uses enrollment
-         rx_carelevel_max = factor(case_when(   
-           rx_carelevel___4 == 1 ~ 4, 
-           rx_carelevel___3 == 1 ~ 3, 
-           rx_carelevel___2 == 1 ~ 2, 
-           rx_carelevel___1 == 1 ~ 1, 
-           rx_carelevel___0 == 1 ~ 0, 
-           T ~ NA_real_,
-         ), rx_carelevel_max_levds$lev, rx_carelevel_max_levds$lab),
-         gen_1NH_TF = rx_carelevel___4 == 0,
-         gen_1NH_FT = ifelse(infect_yn == 0, NA, !gen_1NH_TF),
-         gen_1H = factor_xnot_cat(gen_1NH_FT, "Hospitalized during acute phase", is.na(rx_carelevel_max)),
-         baseline_visit_month_enr = cut_to_fum(as.numeric(enroll_dt - index_dt)), 
-         baseline_visit_month_base = cut_to_fum(as.numeric(base_visit_dt - index_dt)),
-         baseline_visit_month = ifelse(is.na(baseline_visit_month_base), baseline_visit_month_enr, baseline_visit_month_base), 
-         race_sum = rowSums(pick(matches("race___\\d"))), 
-         race_unique_an = factor(case_when(race_sum == 1 & race___3 == 1 ~ "Non-Hispanic Black",
-                                           race_sum == 1 & (race___7 == 1 | race___5 == 1) ~ "Non-Hispanic White",
-                                           race_sum == 2 & race___7 == 1 & race___5 == 1 ~ "Non-Hispanic White",
-                                           race_sum == 1 & race___2 == 1 ~ "Non-Hispanic Asian",
-                                           race___4 == 1 ~ "Hispanic",
-                                           T ~ "Mixed race/Other/Missing"
-         ), levels = c("Non-Hispanic White", "Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic", "Mixed race/Other/Missing")
-         ),
-         biosex_an = factor(case_when(biosex == 0 ~ "Male",
-                                      biosex == 1 ~ "Female/Intersex",
-                                      biosex == 2 ~ "Female/Intersex",
-                                      T ~ as.character(biosex) # dont need this option
-         ), levels = c("Female/Intersex", "Male")), 
-         # collection of processed sdoh variables 
-         marital = factor(case_when(
-           sdoh_marital %in% c(1, 6) ~ "Married or living with partner",
-           is.na(sdoh_marital) | sdoh_marital == -88 ~ as.character(NA),
-           T ~ "Divorced, widowed, separated, or never married"), 
-           levels = c("Divorced, widowed, separated, or never married", "Married or living with partner")), 
-         sd_homeless = case_when( # continue here 
-           sdoh_homeless == 1 ~ 1,
-           sdoh_homeless == -88 | is.na(sdoh_homeless) ~ as.numeric(NA),
-           sdoh_homeless == 0 ~ 0), 
-         sd_disability = case_when(
-           sdoh_employ == 5 ~ 1,
-           sdoh_employ %in% c(-88, 99) | is.na(sdoh_employ) ~ as.numeric(NA),
-           T ~ 0), 
-         sd_unemploy = case_when(
-           sdoh_employ == 3 ~ 1,
-           sdoh_employ %in% c(-88, 99) | is.na(sdoh_employ) ~ as.numeric(NA),
-           T ~ 0), 
-         sd_medicaid = case_when(
-           sdoh_insurance___7 == 1 ~ 1,
-           sdoh_insurance____88 == 1 | sdoh_insurance___98 == 1 ~ as.numeric(NA),
-           sdoh_insurance___1 == 0 & sdoh_insurance___2 == 0 & 
-             sdoh_insurance___3 == 0 & sdoh_insurance___4 == 0 & 
-             sdoh_insurance___5 == 0 & sdoh_insurance___6 == 0 & 
-             sdoh_insurance___7 == 0 & sdoh_insurance___8 == 0 & 
-             sdoh_insurance____88 == 0 & sdoh_insurance___98 == 0 ~ as.numeric(NA),
-           T ~ 0), 
-         sd_uninsured = case_when(
-           sdoh_insurance___5 == 1 ~ 1,
-           sdoh_insurance____88 == 1 | sdoh_insurance___98 == 1 ~ as.numeric(NA),
-           sdoh_insurance___1 == 0 & sdoh_insurance___2 == 0 & 
-             sdoh_insurance___3 == 0 & sdoh_insurance___4 == 0 & 
-             sdoh_insurance___5 == 0 & sdoh_insurance___6 == 0 & 
-             sdoh_insurance___7 == 0 & sdoh_insurance___8 == 0 & 
-             sdoh_insurance____88 == 0 & sdoh_insurance___98 == 0 ~ as.numeric(NA),
-           T ~ 0), 
-         sd_lostinsur = case_when(
-           sdoh_lostinsurance == 1 ~ 1,
-           sdoh_lostinsurance %in% c(99, -88) | is.na(sdoh_lostinsurance) ~ as.numeric(NA),
-           sdoh_lostinsurance == 0 ~ 0), 
-         sd_income = factor(case_when(
-           sdoh_income2019 %in% c(1,2,3) ~ "<$25,000",
-           sdoh_income2019 %in% c(4,5) ~ "$25,000-$49,999",
-           sdoh_income2019 %in% c(6,7,8) ~ ">$50,000",
-           T ~ as.character(NA)
-         ), levels = c("<$25,000", "$25,000-$49,999", ">$50,000")), 
-         sd_moneyshort = factor(case_when(
-           sdoh_moneyshort == 1 ~ "Very difficult to cover expenses",
-           sdoh_moneyshort == 2 ~ "Somewhat difficult to cover expenses",
-           sdoh_moneyshort == 3 ~ "Not at all difficult to cover expenses",
-           T ~ as.character(NA)), levels = c("Not at all difficult to cover expenses", 
-                       "Somewhat difficult to cover expenses",
-                       "Very difficult to cover expenses")), 
-         sd_docvisit = factor(case_when(
-           nhis_lastvisit %in% c(1,2,3,4) ~ "Within the last 5 years",
-           nhis_lastvisit %in% c(5,6) ~ "Greater than 5 years",
-           T ~ as.character(NA)
-         ), levels = c("Within the last 5 years", "Greater than 5 years")), 
-         sd_skipcare = case_when(
-           nhis_skipcare == 1 ~ 1,
-           nhis_skipcare %in% c(99, -88) | is.na(nhis_skipcare) ~ as.numeric(NA),
-           nhis_skipcare == 2 ~ 0), 
-         sd_food = case_when(
-           sdoh_worryfood %in% c(1,2) ~ 1,
-           sdoh_lackfood %in% c(1,2) ~ 1,
-           sdoh_worryfood == 3 | sdoh_lackfood == 3 ~ 0,
-           T ~ as.numeric(NA))) %>%  
+    withdraw_dt_comb = coalesce(withdraw_dt, eop_form_dt), 
+    withdraw_dt = withdraw_dt_comb, 
+    withdrawn_yn = withdraw_yn %in% 1 | eop_withdrawcalc %in% "(withdrawn)",
+    cohort_c4r = site %in% c("1201", "1202"),
+    preg_cohort = grepl("^RA125|^RA126", record_id), 
+    acute_yn_f = factor(acute_yn, levels = c(1, 0), labels = c("Acute", "Post-Acute")), 
+    infect_yn_f = factor(infect_yn, levels = c(1, 0), labels = c("Infected", "Uninfected")),
+    move_to_infected = case_when(Nucleocapsid == "Positive" & infect_yn_f == "Uninfected" ~ 1,
+                                 Spike == "Positive" & vacc_base_f == "No" & infect_yn_f == "Uninfected" ~ 1,
+                                 T ~ 0),
+    infect_yn_anti_f = factor(case_when(move_to_infected == 1 ~ "Infected",
+                                        T ~ as.character(infect_yn_f)), levels = c("Infected", "Uninfected")),
+    acute_reinf_x = record_id %in% acute_reinf_extra$record_id, 
+    enrolled = (cons_yn %in% 1) & !startsWith(site, "S"),
+    study_grp = case_when_fcte(
+      infect_yn == 1 & acute_yn == 1 ~ study_grp_levs["AI"],
+      infect_yn == 0 & acute_yn == 1 ~ study_grp_levs["AN"],
+      infect_yn == 1 & acute_yn == 0 ~ study_grp_levs["PI"],
+      infect_yn == 0 & acute_yn == 0 ~ study_grp_levs["PN"]
+    ),
+    days_reinf_enr = as.numeric(enroll_dt - enrl_reinfdt),
+    days_reinf_index = as.numeric(enrl_reinfdt - index_dt),
+    acute_reinf_90 = !is.na(enrl_reinfdt) &
+      infect_yn == 1 & 
+      acute_yn == 0 &
+      days_reinf_enr <= 30 & 
+      days_reinf_index > 90 & 
+      enrl_reinf90dayyn %in% 1,
+    across(c("referral_type", "biosex"), ~ adult_afmts[[cur_column()]](.x), .names = "{.col}_f"), 
+    hispanic_yn_f = factor(case_when(
+      psum(!!!syms(grep("^race___", colnames(core_initial), value = T))) == 0  ~ as.numeric(NA),
+      race___4 == 0 ~ 0, 
+      race___4 == 1 ~ 1, 
+    ), c(1, 0), c("Yes", "No")),
+    age_enrl_cat_f = factor(case_when(                                           
+      age_enroll >= 18 & age_enroll < 46 ~ 1, 
+      age_enroll >= 46 & age_enroll < 66 ~ 2, 
+      age_enroll >= 66 ~ 3, 
+      T ~ NA_real_,
+    ), age_cat_levds$lev, age_cat_levds$lab),
+    vacc_base_tf = vacc_base_f == "Yes", # NOTE: this only uses enrollment
+    rx_carelevel_max = factor(case_when(   
+      rx_carelevel___4 == 1 ~ 4, 
+      rx_carelevel___3 == 1 ~ 3, 
+      rx_carelevel___2 == 1 ~ 2, 
+      rx_carelevel___1 == 1 ~ 1, 
+      rx_carelevel___0 == 1 ~ 0, 
+      T ~ NA_real_,
+    ), rx_carelevel_max_levds$lev, rx_carelevel_max_levds$lab),
+    gen_1NH_TF = rx_carelevel___4 == 0,
+    gen_1NH_FT = ifelse(infect_yn == 0, NA, !gen_1NH_TF),
+    gen_1H = factor_xnot_cat(gen_1NH_FT, "Hospitalized during acute phase", is.na(rx_carelevel_max)),
+    baseline_visit_month_enr = cut_to_fum(as.numeric(enroll_dt - index_dt)), 
+    baseline_visit_month_base = cut_to_fum(as.numeric(base_visit_dt - index_dt)),
+    baseline_visit_month = ifelse(is.na(baseline_visit_month_base), baseline_visit_month_enr, baseline_visit_month_base), 
+    race_sum = rowSums(pick(matches("race___\\d"))), 
+    race_unique_an = factor(case_when(race_sum == 1 & race___3 == 1 ~ "Non-Hispanic Black",
+                                      race_sum == 1 & (race___7 == 1 | race___5 == 1) ~ "Non-Hispanic White",
+                                      race_sum == 2 & race___7 == 1 & race___5 == 1 ~ "Non-Hispanic White",
+                                      race_sum == 1 & race___2 == 1 ~ "Non-Hispanic Asian",
+                                      race___4 == 1 ~ "Hispanic",
+                                      T ~ "Mixed race/Other/Missing"
+    ), levels = c("Non-Hispanic White", "Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic", "Mixed race/Other/Missing")
+    ),
+    biosex_an = factor(case_when(biosex == 0 ~ "Male",
+                                 biosex == 1 ~ "Female/Intersex",
+                                 biosex == 2 ~ "Female/Intersex",
+                                 T ~ as.character(biosex) # dont need this option
+    ), levels = c("Female/Intersex", "Male")), 
+    # collection of processed sdoh variables 
+    marital = factor(case_when(
+      sdoh_marital %in% c(1, 6) ~ "Married or living with partner",
+      is.na(sdoh_marital) | sdoh_marital == -88 ~ as.character(NA),
+      T ~ "Divorced, widowed, separated, or never married"), 
+      levels = c("Divorced, widowed, separated, or never married", "Married or living with partner")), 
+    sd_homeless = case_when( 
+      sdoh_homeless == 1 ~ 1,
+      sdoh_homeless == -88 | is.na(sdoh_homeless) ~ as.numeric(NA),
+      sdoh_homeless == 0 ~ 0), 
+    sd_disability = case_when(
+      sdoh_employ == 5 ~ 1,
+      sdoh_employ %in% c(-88, 99) | is.na(sdoh_employ) ~ as.numeric(NA),
+      T ~ 0), 
+    sd_unemploy = case_when(
+      sdoh_employ == 3 ~ 1,
+      sdoh_employ %in% c(-88, 99) | is.na(sdoh_employ) ~ as.numeric(NA),
+      T ~ 0), 
+    sd_medicaid = case_when(
+      sdoh_insurance___7 == 1 ~ 1,
+      sdoh_insurance____88 == 1 | sdoh_insurance___98 == 1 ~ as.numeric(NA),
+      sdoh_insurance___1 == 0 & sdoh_insurance___2 == 0 & 
+        sdoh_insurance___3 == 0 & sdoh_insurance___4 == 0 & 
+        sdoh_insurance___5 == 0 & sdoh_insurance___6 == 0 & 
+        sdoh_insurance___7 == 0 & sdoh_insurance___8 == 0 & 
+        sdoh_insurance____88 == 0 & sdoh_insurance___98 == 0 ~ as.numeric(NA),
+      T ~ 0), 
+    sd_uninsured = case_when(
+      sdoh_insurance___5 == 1 ~ 1,
+      sdoh_insurance____88 == 1 | sdoh_insurance___98 == 1 ~ as.numeric(NA),
+      sdoh_insurance___1 == 0 & sdoh_insurance___2 == 0 & 
+        sdoh_insurance___3 == 0 & sdoh_insurance___4 == 0 & 
+        sdoh_insurance___5 == 0 & sdoh_insurance___6 == 0 & 
+        sdoh_insurance___7 == 0 & sdoh_insurance___8 == 0 & 
+        sdoh_insurance____88 == 0 & sdoh_insurance___98 == 0 ~ as.numeric(NA),
+      T ~ 0), 
+    sd_lostinsur = case_when(
+      sdoh_lostinsurance == 1 ~ 1,
+      sdoh_lostinsurance %in% c(99, -88) | is.na(sdoh_lostinsurance) ~ as.numeric(NA),
+      sdoh_lostinsurance == 0 ~ 0), 
+    sd_income = factor(case_when(
+      sdoh_income2019 %in% c(1,2,3) ~ "<$25,000",
+      sdoh_income2019 %in% c(4,5) ~ "$25,000-$49,999",
+      sdoh_income2019 %in% c(6,7,8) ~ ">$50,000",
+      T ~ as.character(NA)
+    ), levels = c("<$25,000", "$25,000-$49,999", ">$50,000")), 
+    sd_moneyshort = factor(case_when(
+      sdoh_moneyshort == 1 ~ "Very difficult to cover expenses",
+      sdoh_moneyshort == 2 ~ "Somewhat difficult to cover expenses",
+      sdoh_moneyshort == 3 ~ "Not at all difficult to cover expenses",
+      T ~ as.character(NA)), levels = c("Not at all difficult to cover expenses", 
+                                        "Somewhat difficult to cover expenses",
+                                        "Very difficult to cover expenses")), 
+    sd_docvisit = factor(case_when(
+      nhis_lastvisit %in% c(1,2,3,4) ~ "Within the last 5 years",
+      nhis_lastvisit %in% c(5,6) ~ "Greater than 5 years",
+      T ~ as.character(NA)
+    ), levels = c("Within the last 5 years", "Greater than 5 years")), 
+    sd_skipcare = case_when(
+      nhis_skipcare == 1 ~ 1,
+      nhis_skipcare %in% c(99, -88) | is.na(nhis_skipcare) ~ as.numeric(NA),
+      nhis_skipcare == 2 ~ 0), 
+    sd_food = case_when(
+      sdoh_worryfood %in% c(1,2) ~ 1,
+      sdoh_lackfood %in% c(1,2) ~ 1,
+      sdoh_worryfood == 3 | sdoh_lackfood == 3 ~ 0,
+      T ~ as.numeric(NA))) %>%  
   which_ms(ms_vrb_name = "race", new_column_name = "race_cat", afmt_list = adult_afmts, labs_rm = "Prefer not to answer") %>% # creates a single select
   which_ms(ms_vrb_name = "race", new_column_name = "race_cat_extra", afmt_list = adult_afmts) %>% 
   which_ms(ms_vrb_name = "race_hisp", new_column_name = "hisp_origin", afmt_list = adult_afmts) %>% 
@@ -396,8 +397,11 @@ core <- core_initial %>%
   which_ms(ms_vrb_name = "rx_carelevel", new_column_name = "rxcl_auto", afmt_list = adult_afmts)
 
 # code to find all variables in core that are NOT in ds_dd (excluding ms variables)
-# core_vrbs_not_in_dsdd <- colnames(core)[colnames(core) %!in% ds_dd$vr.name]
-# core_vrbs_not_in_dsdd[core_vrbs_not_in_dsdd %!in% all_dsfdata_ms_vrbs]
+all_variable_names <- names(ds_fdata)
+all_dsfdata_ms_vrbs <- grep("___", all_variable_names, value = T)
+
+core_vrbs_not_in_dsdd <- colnames(core)[colnames(core) %!in% ds_dd$vr.name]
+core_vrbs_not_in_dsdd[core_vrbs_not_in_dsdd %!in% all_dsfdata_ms_vrbs]
 
 # core adult dataset to be used in congenital dataset creation script
 parent_first_vacc <- formds_list$vaccine_status %>% 
@@ -492,8 +496,8 @@ labs_comb_long <- mk_labs_comb_long() %>%
          lab_nm_meaning = case_when(grepl("ab$", lab_nm) ~ "Abnormal",
                                     lab_nm == "lab_ca" ~ "Value", 
                                     grepl("ca$", lab_nm) ~ "Clinically Actionable",
-                                     grepl("u$", lab_nm) ~ "Unit",
-                                      .default = "Value")) %>%
+                                    grepl("u$", lab_nm) ~ "Unit",
+                                    .default = "Value")) %>%
   relocate(redcap_event_name, panel, lab, lab_nm, lab_nm_meaning, clab_val, clab_dt, rlab_val, rlab_dt, 
            src, lab_val, lab_dt, unit_note, conversionfactor, wbc_val, cf_num, ref_unit_note, lab_valc, .after = record_id)
 
@@ -1421,8 +1425,8 @@ pasc_gen_fxn <- function(pds) {
            across(starts_with("pasc_score_tf"), \(x) factor(x, c(T, F), c("Yes", "No")),
                   .names="{gsub('_tf', '_yn', .col)}"),
            pasc_score3 = case_when(pasc_score == 0 ~ "LC Index 0",
-                                   pasc_score < cutoff ~ glue("LC Index 1-{cutoff}"),
-                                   pasc_score >= cutoff ~ "LC Index {cutoff}+"),
+                                   pasc_score < cutoff ~ glue("LC Index 1-{cutoff-1}"),
+                                   pasc_score >= cutoff ~ glue("LC Index {cutoff}+")),
            version_n = gsub("jp", "", scr_version)) %>% 
     select(-scr_version) %>% 
     pivot_wider(names_from=version_n, values_from = -c(all_of(sym_id_vrs), version_n)) %>% 

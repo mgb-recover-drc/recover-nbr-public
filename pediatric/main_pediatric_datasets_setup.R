@@ -20,7 +20,10 @@ setwd(paste0(sbgenomics_path, "/project-files/code/"))
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
 
-bargs <- getArgs(defaults = list(dt = "20240905"))
+bargs <- getArgs(defaults = list(dt = "20241205"))
+
+# check for whether RDs objects already exist in this project's
+if(length(list.files(paste0("../DM/ped/", bargs$dt))) > 0) stop(glue("RDS objects already in existing project - delete RDS files from project-files/DM/ped/{bargs$dt}"))
 
 # Load all relevant RECOVER pediatric and caregiver REDCap files -- 
 dm_rt_dt <- bargs$dt
@@ -29,7 +32,11 @@ dm_rt_dt_m <- substr(dm_rt_dt, 5, 6)
 
 pf_loc <- get_folder_path(fld_str = "project-files") # project-files folder location (for current Seven Bridges environment)
 data_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERPediatricMain_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricMain_REDCap_{dm_rt_dt}")
-data_loc_cg <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERPediatricCaregiver_{dm_rt_dt_y}{dm_rt_dt_m}.1/PediatricCaregiver_REDCap_{dm_rt_dt}")
+data_loc_cg_partial <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERPediatricCaregiver_{dm_rt_dt_y}{dm_rt_dt_m}.1/")
+data_loc_cg_final_fol <- grep("PediatricCaregiver_REDCap", list.files(data_loc_cg_partial), value = T)
+data_loc_cg <- glue("{data_loc_cg_partial}{data_loc_cg_final_fol}")               
+
+
 
 ds_dd_path <- list.files(data_loc, pattern = "RECOVER.*_DataDictionary_.*.csv")
 ds_dd <- read_csv(file.path(data_loc, ds_dd_path)) %>% dd_prep_col_nms()
@@ -44,13 +51,13 @@ ds_cg_dd$choices.calculations.or.slider.labels[ds_cg_dd$vr.name == "demo_cgrace"
                                                                                                   function(x) str_replace_all(str_replace_all(x, "<br>.+", ""), "\\[sname\\]", "me")), collapse="|")
 
 ds_fdata1 <- read.csv(file.path(data_loc, "RECOVER_Pediatrics_redcap_data.tsv"), 
-                     colClasses="character", sep = "\t") %>%
-  mutate(across(everything(), ~ conv_prop_type(.x, cur_column()))) %>% 
+                      colClasses="character", sep = "\t") %>%
+  mutate(across(everything(), ~ conv_prop_type(.x, cur_column(), dd = ds_dd))) %>% 
   select(-any_of("redcap_survey_identifier"))
 
 ds_cg_fdata <- read.csv(file.path(data_loc_cg, "RECOVER_Caregiver_redcap_data.tsv"), 
-                       colClasses="character", sep = "\t") %>%
-  mutate(across(everything(), ~ conv_prop_type(.x, cur_column()))) %>% 
+                        colClasses="character", sep = "\t") %>%
+  mutate(across(everything(), ~ conv_prop_type(.x, cur_column(), dd = ds_cg_dd))) %>% 
   select(-any_of("redcap_survey_identifier"))
 
 event_map_path <- list.files(data_loc, pattern="RECOVER.*_eventmap_.*.csv") 
@@ -120,7 +127,7 @@ ids_w_multiple_bl <- ds_fdata %>%
 
 enrollment_ds <- ds_fdata %>%
   filter(redcap_event_name %in% "enrollment_arm_1", 
-         is.na(redcap_repeat_instrument)) %>% 
+         na_or_blank(redcap_repeat_instrument)) %>% 
   select(record_id, enrl_arms)
 
 # must determine enrl_arms to determine which baseline visit to keep 
@@ -137,7 +144,7 @@ idvis_to_remove <- ds_fdata %>%
 
 ds_fdata_final <- ds_fdata %>%
   anti_join(idvis_to_remove, by = c("record_id", "redcap_event_name"))
-  
+
 # Fixing participants with multiple baseline visits
 # Creating ds_cg_fdata_final
 
@@ -151,7 +158,7 @@ cg_ids_w_multiple_bl <- ds_cg_fdata %>%
 
 cg_enrollment_ds <- ds_cg_fdata %>%
   filter(redcap_event_name %in% "enrollment_arm_1", 
-         is.na(redcap_repeat_instrument)) %>%
+         na_or_blank(redcap_repeat_instrument)) %>%
   select(record_id, calcarms)
 
 # must determine enrl_arms to determine which baseline visit to keep 
@@ -163,7 +170,7 @@ cg_idvis_to_remove <- ds_cg_fdata %>%
             by = "record_id") %>%
   filter((redcap_event_name %in% "baseline_arm_2") & calcarms %in% c("13", "14", "1,3", "1,4") |
            (redcap_event_name %in% "baseline_arm_3") & calcarms %in% c("12", "14", "1,2", "1,4") |
-            redcap_event_name %in% "baseline_arm_4" & calcarms %in% c("12", "13", "1,2", "1,3")) %>%
+           redcap_event_name %in% "baseline_arm_4" & calcarms %in% c("12", "13", "1,2", "1,3")) %>%
   select(record_id, redcap_event_name) %>%
   distinct()
 
@@ -183,6 +190,7 @@ formds_list <- nlapply(unique(ds_dd$form.name), function(form) {
 formds_cg_list <- nlapply(unique(ds_cg_dd$form.name), function(form) {
   get_cur_form_ds(ds_cg_fdata_final, form, dd = ds_cg_dd, event_map = all_rc_forms_event_map_cg, repeat_form = repeated_rc_forms_cg)
 })
+
 
 # core and core_cg: a per-person dataset with individual characteristics (non-repeating) for each participant (i.e. one row per person)
 
@@ -266,6 +274,11 @@ core_base_cg <- reduce(single_instance_form_datasets_cg, \(df1, df2) left_join(d
 # add additional variables to core
 core_cg <- core_base_cg %>%  
   left_join(cg_promote, by = join_by(record_id == enrl_cgid)) %>%
+  left_join(formds_cg_list$consent_tracking %>% 
+              select(record_id, cons_age, cons_dt) %>% 
+              filter(!na_or_blank(cons_age)) %>% 
+              filter(row_number() == 1, .by = record_id), 
+            by = join_by(record_id)) %>% 
   which_ms(ms_vrb_name = "demo_cgrace", new_column_name = "race_cat", afmt_list = cg_afmts, labs_rm = c("I dont know", "I do not want to answer")) %>%
   mutate(base_vis_arm = case_when(enrl_type %in% 1 ~ "baseline_arm_2",
                                   enrl_type %in% 2 ~ "baseline_arm_3",
@@ -273,8 +286,10 @@ core_cg <- core_base_cg %>%
          enrl_type_f = cg_afmts$enrl_type(enrl_type),
          withdraw_dt = if_else(eop_reason %!in% c(NA, 1, 10, 11) | !is.na(all_withdrawn_dt), pmin(all_withdrawn_dt, eop_dt, na.rm=T), as.Date(NA)),
          cohort = case_when(str_extract(record_id, "RC599") == "RC599" ~ "ABCD",
-                            .default = "Main"),
-         cg_age_enroll = round(as.numeric(enrl_dt - enrl_dob)/365.25, digits = 2),
+                            .default = "Main"), 
+         # use consent tracking form info to calculate cg_age_enroll (switch back to using dob if added back in at some point)
+         # cg_age_enroll = round(as.numeric(enrl_dt - enrl_dob)/365.25, digits = 2),
+         cg_age_enroll = cons_age + (round(as.numeric(enrl_dt - cons_dt)/365.25, digits = 2)), 
          cg_age_enrl_cat = factor(case_when(
            cg_age_enroll >= 18 & cg_age_enroll < 46 ~ 1,
            cg_age_enroll >= 46 & cg_age_enroll < 66 ~ 2,
@@ -362,13 +377,13 @@ most_recent_ab <- formds_list$antibody_test_results %>%
   slice_max(order_by = redcap_repeat_instance, n = 1) %>%
   ungroup() %>%
   select(record_id, most_recent_atr_rbdres = atr_rbdres, most_recent_atr_nres = atr_nres) 
-  
+
 
 full_ab <- formds_list$antibody_test_results %>%
   filter(redcap_event_name %in% c("baseline_arm_4", "week_8_arm_2")) %>%
   summarise(across(c(atr_rbdres, atr_nres), \(x) ifelse(all(is.na(x)), NA, as.numeric(any(x %in% 1))),
                    .names = "any_{.col}"), 
-         .by = record_id) %>%
+            .by = record_id) %>%
   left_join(most_recent_ab, 
             by = "record_id")
 
@@ -383,7 +398,7 @@ antibody_results <- formds_list$antibody_test_results %>%
             by = c("record_id","kit_id")) %>% 
   mutate(kit_dt = as.Date(pc_kit_date_time),
          sample_dt = case_when(!is.na(pc_kit_date_time) ~ kit_dt, 
-                             is.na(pc_kit_date_time) ~ as.Date(atr_colldt))) %>% 
+                               is.na(pc_kit_date_time) ~ as.Date(atr_colldt))) %>% 
   distinct() %>% 
   arrange(record_id, sample_dt) %>% 
   filter(sample_dt==min(sample_dt) , .by=record_id)
@@ -400,13 +415,11 @@ vacc_estdt_long <- formds_list$covid_vaccine_history %>%
          vacc=gsub("_\\d.*", "", vacc),
          id_dt=case_when(vacc=="vacc_dt_est" & val==1~record_id))
 
-
 filter_ids <- vacc_estdt_long %>%
   select(id_dt) %>%
   filter(!is.na(id_dt)) %>%
   distinct() %>% 
   pull()
-
 
 vacc_estdt_wide <- vacc_estdt_long %>%
   filter(record_id %in% filter_ids) %>%
@@ -426,8 +439,8 @@ vacc_estdt_wide <- vacc_estdt_long %>%
 core_base <- reduce(single_instance_form_datasets, \(df1, df2) left_join(df1, df2, by = "record_id")) %>%
   left_join(formds_list$demographics %>% 
               filter(redcap_event_name %in% c("baseline_arm_2", "baseline_arm_4")) %>%
-                       select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)), 
-                     by = "record_id") %>%
+              select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)), 
+            by = "record_id") %>%
   left_join(formds_list$covid_vaccine_history %>%
               filter(redcap_event_name %in% c("week_8_arm_2", "baseline_arm_4")) %>%
               select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)), 
@@ -448,18 +461,23 @@ core_base <- reduce(single_instance_form_datasets, \(df1, df2) left_join(df1, df
             by = "record_id") %>%
   left_join(full_ab %>%
               select(record_id, most_recent_atr_rbdres, most_recent_atr_nres, any_atr_rbdres, any_atr_nres), 
-                     by = "record_id") %>%
+            by = "record_id") %>%
   left_join(formds_list$identity %>%
               select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)),
-                     by = "record_id")
+            by = "record_id")
 
 # add additional variables to core
 core <- core_base %>%
   left_join(peds_baseline_any_ds, by = "record_id") %>% 
   left_join(base_ab, by = join_by(record_id)) %>% 
   left_join(antibody_results, by = "record_id") %>%
+  left_join(formds_list$visit_form %>% 
+              select(record_id, visit_agemoreal, visit_dt) %>% 
+              filter(!na_or_blank(visit_agemoreal)) %>% 
+              filter(row_number() == 1, .by = record_id), 
+            by = join_by(record_id)) %>% 
   mutate(site = str_sub(record_id, 4, 7),
-         enrl_dob = as.Date(enrl_dt) - years(enrl_age)) %>% 
+         enrl_dob = visit_dt - (visit_agemoreal * 30.4375)) %>% 
   which_ms(ms_vrb_name = "demo_hisp", new_column_name = "hisp_origin", afmt_list = peds_afmts) %>%
   which_ms(ms_vrb_name = "enrl_spop", new_column_name = "spop", afmt_list = peds_afmts) %>%
   which_ms(ms_vrb_name = "demo_race", new_column_name = "race_cat", afmt_list = peds_afmts) %>%
@@ -500,11 +518,11 @@ core <- core_base %>%
          arm_num_fu = ifelse(ptf_promote_ag, 5, NA),
          #first covid inf dt
          fcih_date = case_when(is.na(fcih_dty) ~ as.Date(NA),
-                             !is.na(fcih_dty) ~ as.Date(paste(ifelse(record_id %in% fcih_dty_query$record_id, paste("20",stri_sub(fcih_dty, -2), sep=""), fcih_dty), sprintf("%02d", as.numeric(fcih_dtm)), "01", sep="-"),  "%Y-%m-%d")),
+                               !is.na(fcih_dty) ~ as.Date(paste(ifelse(record_id %in% fcih_dty_query$record_id, paste("20",stri_sub(fcih_dty, -2), sep=""), fcih_dty), sprintf("%02d", as.numeric(fcih_dtm)), "01", sep="-"),  "%Y-%m-%d")),
          #most recent covid inf dt
          mrcih_date = case_when(study_grp == "Acute Infected" & ccih_dt %!in% NA ~ ccih_dt,
-                              is.na(mrcih_dty) ~ as.Date(NA),
-                              !is.na(mrcih_dty) ~ as.Date(paste(mrcih_dty, sprintf("%02d", as.numeric(mrcih_dtm)), "01", sep="-"),  "%Y-%m-%d")),
+                                is.na(mrcih_dty) ~ as.Date(NA),
+                                !is.na(mrcih_dty) ~ as.Date(paste(mrcih_dty, sprintf("%02d", as.numeric(mrcih_dtm)), "01", sep="-"),  "%Y-%m-%d")),
          #oldest recorded inf_dt
          inf_date = case_when(fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
                               #sometimes people have improbable vlaues for both enrl_inf_dt andd fcih_date
@@ -514,11 +532,11 @@ core <- core_base %>%
                               #many fcih values are very early and unlikely, switching to more likely value.
                               fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt %in% NA~ as.Date("2020-01-01"),
                               #IF fcih date is wildly ridiclous but missing enrl_infdt, its 2020-1-1
-                              fcih_date %!in% NA & acute_yn_f == "Post-Acute" ~ fcih_date, 
-                              #if 1st inf missing but mrcih exsist then only 1 infection 
-                              fcih_date %in% NA & mrcih_date %!in% NA & acute_yn_f == "Acute" ~ mrcih_date, 
+                              fcih_date %!in% NA & acute_yn_f == "Post-Acute" ~ fcih_date,
+                              #if 1st inf missing but mrcih exsist then only 1 infection
+                              fcih_date %in% NA & mrcih_date %!in% NA & acute_yn_f == "Acute" ~ mrcih_date,
                               #if 1st inf not missing then reinfected
-                              fcih_date %!in% NA & acute_yn_f == "Acute" ~ fcih_date, 
+                              fcih_date %!in% NA & acute_yn_f == "Acute" ~ fcih_date,
                               infect_yn_f == "Infected" ~ enrl_infdt,
                               T ~ NA),
          index_date = case_when(infect_yn_f %in% "Uninfected" ~ enrl_dt,
@@ -533,22 +551,22 @@ core <- core_base %>%
                                 T ~ NA),
          #Wave of Omicron or not:
          omicron = case_when(index_date >= as.Date("2021-12-20") ~ 1,
-                           index_date < as.Date("2021-12-20") ~ 0),
+                             index_date < as.Date("2021-12-20") ~ 0),
          reinf_ac = case_when(acute_yn_f == "Acute" & inf_date %!in% NA & fcih_date %in% NA ~ "1st Inf",
                               acute_yn_f == "Acute" & mrcih_date %!in% NA & fcih_date %!in% NA ~ "Reinf",
                               T ~ NA),
          any_spos_vacc = case_when(vacc_yn_f %in% "Not Vaccinated" ~ atr_rbdres,
-                                 T ~ NA),
+                                   T ~ NA),
          infected_uninf = case_when(study_grp %in% "Uninfected" & (ccih_covidyn == 1 | fcih_covidyn == 1) ~ 1),
          inf_ref_dt = case_when(enrl_infdt > enrl_dt ~ fcih_date, 
-                               is.na(enrl_infdt) ~ fcih_date,
-                               !is.na(enrl_infdt) ~ enrl_infdt),
+                                is.na(enrl_infdt) ~ fcih_date,
+                                !is.na(enrl_infdt) ~ enrl_infdt),
          pos_tasso = case_when(infect_yn_f %in% "Uninfected" & atr_nres == T ~ 1,
-                             infect_yn_f %in% "Uninfected" & is.na(atr_nres) & any_spos_vacc == T ~ 1,
-                             T ~ NA),
+                               infect_yn_f %in% "Uninfected" & is.na(atr_nres) & any_spos_vacc == T ~ 1,
+                               T ~ NA),
          enrl_ref_dt = case_when(pos_tasso == T ~ enrl_dt %m-% months(6),
-                               infect_yn_f %in% "Uninfected" ~ enrl_dt,
-                               infect_yn_f %in% "Infected"~ inf_date),
+                                 infect_yn_f %in% "Uninfected" ~ enrl_dt,
+                                 infect_yn_f %in% "Infected"~ inf_date),
          enrl_cgrel_f = factor(id_cgrel, c(1:12, 99), c("Mother", rep("Other Caregiver (i.e, Father, Grandparent, Other Guardian", 12)))) %>%
   mutate(across(matches("vacc_dt_\\d"), \(x) as.Date(x))) %>%
   mutate(across(matches("vacc_dt_\\d"), \(x) case_when(!is.na(x) ~ x), .names = "{col}_imp")) %>%
@@ -594,7 +612,7 @@ core <- core_base %>%
                                       vacc_yn == 1 & is.na(enrl_ref_dt) ~ "Vaccinated but missing information",
                                       vacc_yn < 0 ~ "Unknown",
                                       is.na(vacc_yn) ~ "Unknown"),
-        enrl_cgrel_f = factor(id_cgrel, c(1:12, 99), c("Mother", rep("Other Caregiver (i.e, Father, Grandparent, Other Guardian", 12)))) %>%
+         enrl_cgrel_f = factor(id_cgrel, c(1:12, 99), c("Mother", rep("Other Caregiver (i.e, Father, Grandparent, Other Guardian", 12)))) %>%
   left_join(core_cg %>% 
               select(enrl_cgid = record_id) %>%
               mutate(has_maincg = T), 
@@ -883,7 +901,7 @@ cutoff_df <- data.frame(cutoff=c(5.5, 5),
 #### different age strata, this filtering may not work, and special care should be used when interpreting results in a dataset with 
 #### all different age groups.
 mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_symptoms, form_vis = formds_list$visit_form, pcs = peds_core_symps, symp_vr = "lasso_symps"){
-
+  
   visit_ds <- ds %>% 
     left_join(core_ds %>% select(record_id, arm_num, infect_yn_f, study_grp, biosex_f, enrl_dob), by="record_id") %>% 
     left_join(form_cs %>% 

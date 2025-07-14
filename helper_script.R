@@ -1,6 +1,6 @@
 # function that loads the given list of packages (includes installation if necessary)
 load_libs <- function(add_libs){
-
+  
   lib_load <- sapply(add_libs, function(x) suppressWarnings(do.call("require", list(x))))
   if(any(!lib_load)) {
     install.packages(add_libs[!lib_load])
@@ -82,7 +82,7 @@ dd_prep_col_nms <- function(ds_dd_initial) {
 
 # function for grabbing all of the relevant variables from ds_fdata dataset for the current REDCap form
 get_cur_form_ds <- function(full_ds, cur_form, dd = ds_dd, event_map = all_rc_forms_event_map, repeat_form = repeated_rc_forms) {
-
+  
   all_variable_names <- names(full_ds)
   
   form_vrs <- dd %>% filter(form.name == cur_form, field.type %!in% c("notes")) %>% pull(vr.name)
@@ -95,8 +95,8 @@ get_cur_form_ds <- function(full_ds, cur_form, dd = ds_dd, event_map = all_rc_fo
   cur_form_ds <- full_ds %>% 
     select(any_of(sel_vars)) %>% 
     filter(redcap_event_name %in% all_events_for_cur_form) %>% 
-    filter((is.na(redcap_repeat_instrument) & cur_form %!in% repeat_form) | 
-             (redcap_repeat_instrument == cur_form & cur_form %in% repeat_form)) %>% 
+    filter((na_or_blank(redcap_repeat_instrument) & cur_form %!in% repeat_form) | 
+             (redcap_repeat_instrument %in% cur_form & cur_form %in% repeat_form)) %>% 
     mutate(form = cur_form)
   
   stop_check <- if(cur_form %!in% repeat_form) {
@@ -201,6 +201,7 @@ cut_to_fum <- function(x, fct = F){
 #   - the modified (or not) column for this vrb
 conv_prop_type <- function(cur_vrb_col, vrb_name, dd=ds_dd, verbose = F) {
   # grab all the info from dd from this vrb_name
+  
   vrb_info <- dd %>% filter(vr.name == vrb_name)
   attr(cur_vrb_col, "label") <- vrb_info$field.label
   
@@ -403,3 +404,4 @@ mk_labs_comb_long <- function() {
   ds_out
   
 }
+
