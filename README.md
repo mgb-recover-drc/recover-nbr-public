@@ -1,6 +1,7 @@
 # recover-nbr-public: Public code repository for the Network of Biostatisticians for RECOVER
 
 # Code updates 
+This code base is typically updated every three months, following a data release on Seven Bridges.
 
 ## July 16, 2025 - Adult
 Files updated:
