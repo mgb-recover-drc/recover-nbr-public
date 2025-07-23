@@ -1,5 +1,7 @@
 # NBR Adult Cohort Setup Script
 
+start_tm <- Sys.time()
+
 # Script setup (paths, loading libraries/helper functions, etc.) ----
 
 # determines the path (relative to the current working directory or a specified path location) to the given folder name
@@ -26,7 +28,7 @@ if(set_resp == "Likely an internal run"){
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
-bargs <- getArgs(defaults = list(dt = "20250305", add_log=0))
+bargs <- getArgs(defaults = list(dt = "20250606", add_log=0))
 
 # check for whether RDs objects already exist in this project's
 if(length(list.files(paste0("../DM/adult/", bargs$dt))) > 0) stop(glue("RDS objects already in existing project - delete RDS files from project-files/DM/adult/{bargs$dt}"))
@@ -58,51 +60,31 @@ ds_dd <- read_csv(file.path(data_loc, ds_dd_path)) %>% dd_prep_col_nms()
 ds_dd$choices.calculations.or.slider.labels[ds_dd$vr.name=="race"] <- paste(sapply(strsplit(ds_dd$choices.calculations.or.slider.labels[ds_dd$vr.name=="race"], "\\|"),
                                                                                    function(x) str_replace_all(str_replace_all(x, "<br>.+", ""), "\\[sname\\]", "me")), collapse="|")
 
-
-ds_fdata_raw <- read.csv(file.path(data_loc, "RECOVER_Adult_redcap_data.tsv"), 
-                         colClasses="character", sep = "\t")
-
-ds_fdata <- ds_fdata_raw %>%
-  mutate(across(everything(), ~ conv_prop_type(.x, cur_column()))) %>%
-  select(-any_of("redcap_survey_identifier"))
-
 id_vrs <- c("record_id", "redcap_event_name", "redcap_repeat_instrument", "redcap_repeat_instance") # all of the variables used to identify a specific form instance for a participant
-# all_variable_names <- names(ds_fdata)
-# all_numeric_type_vrbs <- ds_dd %>% 
-#   filter((field.type %in% "calc") | (text.validation.type.or.show.slider.number %in% c("number", "integer"))) %>% 
-#   pull(vr.name)
-
-# num_chr_conv_issues_by_form <- lapply(unique(ds_dd$form.name), function(form) {
-#     
-#   form_vrs <- ds_dd %>% filter(form.name == form) %>% pull(vr.name)
-#   vrbs_to_select <- c(id_vrs, intersect(form_vrs, all_numeric_type_vrbs))
-#   
-#   if(length(vrbs_to_select) == 4) return()
-#   
-#   ds_fdata_raw %>% 
-#     select(all_of(vrbs_to_select)) %>% 
-#     pivot_longer(cols = -all_of(c(id_vrs)), 
-#                  names_to = "variable", 
-#                  values_to = "value") %>% 
-#     mutate(value_conv_num = as.numeric(value)) %>% 
-#     filter((!na_or_blank(value)) & (is.na(value_conv_num)))
-#   
-# })
-# 
-# ds_num_chr_issues <- Reduce(function(x, y) bind_rows(x, y), num_chr_conv_issues_by_form)
 
 event_map_path <- list.files(data_loc, pattern="RECOVER.*_eventmap_.*.csv") 
 all_rc_forms_event_map <- read_csv(file.path(data_loc, event_map_path))
 repeat_forms_path <- list.files(data_loc, pattern="RECOVER.*_repeatforms_.*.csv") 
 repeated_rc_forms <- unique(read_csv(file.path(data_loc, repeat_forms_path)) %>% pull(form_name))
 
+mulligan_data_path <- glue("{pf_loc}/RECOVERAdult_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERAdult_BiostatsDerived_{dm_rt_dt}/mulligan_data.csv")
+mull_upload_data <- read_csv(file.path(mulligan_data_path))
+
 # Essential datasets creation (formds_list, core, etc.) ----
 
 # formds_list: a list of datasets where each one corresponds to all the data in REDCap for a specific form (across all instances)
 
-formds_list <- nlapply(unique(ds_dd$form.name), function(form) {
-  get_cur_form_ds(ds_fdata, form)
-})
+fds_list_t1 <- Sys.time()
+formds_list <- fread(file.path(data_loc, "RECOVER_Adult_redcap_data.tsv"), 
+                     colClasses = "character", data.table = F) %>%
+  mutate(across(everything(), ~ conv_prop_type(.x, cur_column()))) %>%
+  select(-any_of("redcap_survey_identifier")) %>% 
+  get_cur_form_ds(ds_dd, all_rc_forms_event_map)
+
+fds_list_t2 <- Sys.time()
+fds_list_total_time <- format(round(fds_list_t2 - fds_list_t1, 3), nsmall = 3)
+
+cat(glue("------------------- formds_list created - Total time: {fds_list_total_time} ------------------- \n\n"))
 
 # core: a per-person dataset with individual characteristics (non-repeating) for each particiant (i.e. one row per person)
 
@@ -295,6 +277,9 @@ core <- core_initial %>%
   left_join(vacc_status %>% select(record_id, vacc_base_f, fvacc_index), by = "record_id") %>%
   left_join(base_visit_ds %>% select(record_id, base_visit_dt), 
             by = "record_id") %>%
+  left_join(mull_upload_data %>% 
+              select(record_id, mull_comb_res = overall_inf_ev), 
+            by = "record_id") %>% 
   mutate(site = substr(record_id, 4, 7)) %>% 
   mutate(# site_curr = coalesce(site_curr_vd, site),  # site_curr_vd uses visit_dag variable, which is not available here
     withdraw_dt_comb = coalesce(withdraw_dt, eop_form_dt), 
@@ -309,8 +294,9 @@ core <- core_initial %>%
                                  T ~ 0),
     infect_yn_anti_f = factor(case_when(move_to_infected == 1 ~ "Infected",
                                         T ~ as.character(infect_yn_f)), levels = c("Infected", "Uninfected")),
-    infect_yn_xanti_f = factor(case_when(enrl_immunophenotype == 1 ~ "Infected",
-                                         T ~ as.character(infect_yn_anti_f)), levels = c("Infected", "Uninfected")),
+    infect_yn_xanti_f = factor(case_when(mull_comb_res %in% 1 ~ "Infected",
+                                         T ~ as.character(infect_yn_anti_f)), 
+                               levels = c("Infected", "Uninfected")),
     acute_reinf_x = record_id %in% acute_reinf_extra$record_id, 
     enrolled = (cons_yn %in% 1) & !startsWith(site, "S"),
     study_grp = case_when_fcte(
@@ -443,13 +429,6 @@ core <- core_initial %>%
   which_ms(ms_vrb_name = "gender", new_column_name = "gender_cat", afmt_list = adult_afmts) %>% 
   which_ms(ms_vrb_name = "rx_carelevel", new_column_name = "rxcl_auto", afmt_list = adult_afmts)
 
-# code to find all variables in core that are NOT in ds_dd (excluding ms variables)
-all_variable_names <- names(ds_fdata)
-all_dsfdata_ms_vrbs <- grep("___", all_variable_names, value = T)
-
-core_vrbs_not_in_dsdd <- colnames(core)[colnames(core) %!in% ds_dd$vr.name]
-core_vrbs_not_in_dsdd[core_vrbs_not_in_dsdd %!in% all_dsfdata_ms_vrbs]
-
 # core adult dataset to be used in congenital dataset creation script
 parent_first_vacc <- formds_list$vaccine_status %>% 
   select(record_id, starts_with("vacc_vaccdt")) %>% 
@@ -536,6 +515,7 @@ conv_ref = lab_info %>%
   left_join(lab_unit_info, by = join_by(vr.name)) %>% 
   rename(ref_unit_note = unit_note)
 
+labs_comb_t1 <- Sys.time()
 labs_comb_long <- mk_labs_comb_long() %>%
   left_join(conv_ref %>% select(panel, lab, ref_unit_note)) %>% 
   mutate(lab_valc = as.numeric(lab_val) * cf_num,
@@ -565,7 +545,10 @@ labs_simp_long_chr <- labs_comb_long %>%
 labs_simp_wide_chr <- labs_simp_long_chr %>%
   pivot_wider(names_from = panel_lab, values_from = lab_val_chr)
 
+labs_comb_t2 <- Sys.time()
+labs_comb_total_time <- format(round(labs_comb_t2 - labs_comb_t1, 3), nsmall = 3)
 
+cat(glue("------------------- labs_comb datasets created - Total time: {labs_comb_total_time} ------------------- \n\n"))
 
 # latest PASC symptoms and scoring code (brought over from adult_mkrenv.R script) --------------------
 
@@ -1578,10 +1561,14 @@ summ_nums <- lapply(save_list, function(x) data.frame(datasets = "data.frame" %i
 save_txt <- glue("Data includes {paste(summ_nums$txt, collapse=', ')}, and formds_list includes {length(formds_list)} datasets corresponding to REDCap forms")
 
 
+end_tm <- Sys.time()
+total_time_rounded <- format(round(end_tm - start_tm, 3), nsmall = 3)
+
+
 cat(glue("\n\n\n\n------ Data saved in {dm_dir}
          \n------ {save_txt}
          \n------ Data was loaded from {dm_rt_dt}
-         \n------ Complete {format(Sys.time(), '%Y%m%d %H:%M')}
+         \n------ Complete. Total Run Time {total_time_rounded}
          \n\n"))
 
 closeAllConnections()
