@@ -86,7 +86,7 @@ dd_prep_col_nms <- function(ds_dd_initial) {
 }
 
 # function for grabbing all of the relevant variables from ds_fdata dataset for the current REDCap form
-get_cur_form_ds <- function(full_ds, cur_form, dd = ds_dd, event_map = all_rc_forms_event_map, repeat_form = repeated_rc_forms) {
+get_cur_form_ds <- function(full_ds, cur_form, peds_cohort_flag = F, dd = ds_dd, event_map = all_rc_forms_event_map, repeat_form = repeated_rc_forms) {
   
   all_variable_names <- names(full_ds)
   
@@ -95,7 +95,11 @@ get_cur_form_ds <- function(full_ds, cur_form, dd = ds_dd, event_map = all_rc_fo
   
   all_events_for_cur_form <- event_map %>% filter(form %in% cur_form) %>% pull(unique_event_name)
   
-  sel_vars <- intersect(names(full_ds), c(id_vrs, form_vrs, form_vrs_ms))
+  if (peds_cohort_flag) {
+    sel_vars <- c(intersect(names(full_ds), c(id_vrs, form_vrs, form_vrs_ms)), paste0(cur_form, "_complete"))
+  } else {
+    sel_vars <- intersect(names(full_ds), c(id_vrs, form_vrs, form_vrs_ms))
+  }
   
   cur_form_ds <- full_ds %>% 
     select(any_of(sel_vars)) %>% 

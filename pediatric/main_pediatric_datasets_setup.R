@@ -112,6 +112,12 @@ for(i in 1:nrow(ya_df)){
   
 }
 
+if(ds_fdata1$enrl_dt[ds_fdata1$record_id == "RP29918-00032" & ds_fdata1$redcap_event_name == "enrollment_arm_1"] == as.Date("2022-11-21")){
+  ds_fdata1$enrl_dt[ds_fdata1$record_id == "RP29918-00032" & ds_fdata1$redcap_event_name == "enrollment_arm_1"]  <- "2023-07-01"
+  ds_fdata1$enrl_acuteyn[ds_fdata1$record_id == "RP29918-00032" & ds_fdata1$redcap_event_name == "enrollment_arm_1"]  <- 0
+  ds_fdata1$enrl_arms[ds_fdata1$record_id == "RP29918-00032" & ds_fdata1$redcap_event_name == "enrollment_arm_1"]  <- "1,4"
+}
+
 ds_fdata <- ds_fdata1
 rm(ds_fdata1)
 
@@ -185,7 +191,7 @@ id_vrs <- c("record_id", "redcap_event_name", "redcap_repeat_instrument", "redca
 # formds_list and formds_cg_list: a list of datasets where each one corresponds to all the data in REDCap for a specific form (across all instances)
 
 formds_list <- nlapply(unique(ds_dd$form.name), function(form) {
-  get_cur_form_ds(ds_fdata_final, form)
+  get_cur_form_ds(ds_fdata_final, form, peds_cohort_flag = T)
 })
 
 formds_cg_list <- nlapply(unique(ds_cg_dd$form.name), function(form) {
@@ -404,7 +410,9 @@ antibody_results <- formds_list$antibody_test_results %>%
   distinct() %>% 
   arrange(record_id, sample_dt) %>% 
   filter(sample_dt==min(sample_dt) , .by=record_id) %>%
-  select(-redcap_event_name)
+  select(-redcap_event_name) %>%
+  select(record_id, kit_dt, sample_dt) %>% 
+  distinct()
 
 vacc_estdt_long <- formds_list$covid_vaccine_history %>%
   filter(redcap_event_name %in% c("week_8_arm_2", "baseline_arm_4")) %>%
@@ -585,14 +593,14 @@ core <- core_base %>%
          reinf_ac = case_when(acute_yn_f == "Acute" & inf_date %!in% NA & fcih_date %in% NA ~ "1st Inf",
                               acute_yn_f == "Acute" & mrcih_date %!in% NA & fcih_date %!in% NA ~ "Reinf",
                               T ~ NA),
-         any_spos_vacc = case_when(vacc_yn_f %in% "Not Vaccinated" ~ atr_rbdres,
+         any_spos_vacc = case_when(vacc_yn_f %in% "Not Vaccinated" ~ any_atr_rbdres,
                                    T ~ NA),
          infected_uninf = case_when(study_grp %in% "Uninfected" & (ccih_covidyn == 1 | fcih_covidyn == 1) ~ 1),
          inf_ref_dt = case_when(enrl_infdt > enrl_dt ~ fcih_date, 
                                 is.na(enrl_infdt) ~ fcih_date,
                                 !is.na(enrl_infdt) ~ enrl_infdt),
-         pos_tasso = case_when(infect_yn_f %in% "Uninfected" & atr_nres == T ~ 1,
-                               infect_yn_f %in% "Uninfected" & is.na(atr_nres) & any_spos_vacc == T ~ 1,
+         pos_tasso = case_when(infect_yn_f %in% "Uninfected" & any_atr_nres == T ~ 1,
+                               infect_yn_f %in% "Uninfected" & is.na(any_atr_nres) & any_spos_vacc == T ~ 1,
                                T ~ NA),
          enrl_ref_dt = case_when(pos_tasso == T ~ enrl_dt %m-% months(6),
                                  infect_yn_f %in% "Uninfected" ~ enrl_dt,
@@ -971,7 +979,7 @@ peds_core_symps <- ds_dd %>%
 mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_symptoms, form_vis=formds_list$visit_form, pcs = peds_core_symps, symp_vr = "lasso_symps", dd){
   all_names_cs <- names(form_cs)
   first_name_cs = which(all_names_cs == "ps_colldt")
-  last_name_cs = which(all_names_cs == "form") - 1
+  last_name_cs = which(all_names_cs == "covid_symptoms_complete") - 1
   if(missing(dd)){
     ignore_vrs <- c("ps_coord___1", "ps_colllang", "ps_infected", "ps_mens", 
                     "ps_stext_2_4_wk", "ps_stext_2_4_wk_es", "ps_stext_8_wk", 
@@ -1331,7 +1339,7 @@ peds_pasc_fxn <- function(long_df, scores=score_tab, cutoff=cutoff_df, lasso_ans
 
 all_names_cs <- names(formds_list$covid_symptoms)
 first_name_cs = which(all_names_cs == "ps_colldt")
-last_name_cs = which(all_names_cs == "form") - 1
+last_name_cs = which(all_names_cs == "covid_symptoms_complete") - 1
 
 ignore_vrs <- ds_dd %>% 
   filter(vr.name %in% all_names_cs,
