@@ -2,13 +2,54 @@
 
 # Code updates 
 
+## July 16, 2025 - Adult
+Files updated:
+1. main_adult_datasets_setup.R
+
+### Updates to main_adult_datasets_setup.R:
+* updated the definition of infect_yn_xanti_f in core dataset to use the mull_comb_res variable from the joined-on Mulligan dataset instead of the previously used enrl_immunophenotype variable. This new variable contains information that is not available in the RECOVER REDCap.
+* the full REDCap dataset ds_fdata is no longer saved as an object in the script – rather, it is now loaded in (via fread) and modified within the formds_list creation process 
+* total time updates have been added as print statements, such that the completion of more time-consuming sections of the setup script will now be documented in the shell file output (can be viewed in the associated .log file)
+
+
+## July 11, 2025 - Peds
+Files updated:
+1. main_pediatric_datasets_setup.R
+2. helper_script.R
+
+### Updates to main_pediatric_datasets_setup.R: 
+* In creating formds_list, a peds_cohort_flag value is now passed into the get_cur_form_ds function that ensures _complete variables are included in formds_list dataset
+* Fixed antibody_results dataset to only join in a distinct kit_dt and sample_dt to core, which fixed the duplicate record_id’s that appeared in core. 
+* Updated the any_spos_vacc and pos_tasso definitions in core, so they use any_atr_rbdres instead of atr_rbdres. 
+* Now that the covid_symptoms_complete variable is in the data, updated the code in mk_ps_symp_df and the code after where peds_pasc_fxn to use the covid_symptoms_complete variable to accurately determine the name of the last variable in the covid_symptoms form
+* Fixed how n_entered in the started_ps was defined to account for the empty strings present in the value column.  
+* Renamed ds_fdata1 to ds_fdata_raw and renamed ds_cg_fdata to ds_cg_fdata_raw; updated these names where used throughout the code
+* Renamed ds_fdata_final to be ds_fdata and also renamed ds_cg_fdata_final to be ds_cg_fdata.  
+* Updated peds_pasc_fxn to use ps_infected instead of study_grp to see which participant gets asked which questions 
+   * Including ps_infected in the datasets that are output by the fix
+* Mk_ps_symp_df function was updated to include ps_infected in the resulting symp_ds, so the updated peds_pasc_fxn can run
+* Variables added to peds core: ptf_category, promotion_probability, promotion_weights
+   * New datasets cs_complete and bl_visit_age are added and joined to core, in order to have the variables needed to create these 3 new variables in core. 
+* all saved REDCap data files are now read in via vroom R package (instead of base R or readr)
+
+### Updates to helper_script.R:
+* get_cur_form_ds function updated in the following ways:
+   * now retrieves _complete variables if being called in the process of making formds_list for peds 
+   * removed function parameter defaults (except for peds_cohort_flag) 
+   * function now returns the named list of datasets itself, instead of just returning the relevant dataset for the current form
+   * current form dataset now filtered by derived fdls_recprocessing_n_done variable (instead of by form event mapping data like it used to be) to remove rows where the number of variables with data is zero
+* uses of get_cur_form_ds updated to reflect these changes in all cohort setup scripts 
+* Due to these changes we have updated the description of formds_list accordingly: 
+   * A named list of datasets where each dataset corresponds to a specific form in REDCap.  Forms in REDCap are unique by record_id and redcap_event_name or record_id, redcap_event_name and redcap_repeat_instance for repeating forms. Each dataset is created such that it contains all the variables that appear in the corresponding form. Additionally, in the creation of each dataset, only data (i.e. rows) for those REDCap events at which the form is offered are potentially kept. A blank row does not mean a visit has not been started. 
+
+
 ## April 17, 2025
 
 Files updated:
 1. main_pediatric_datasets_setup.R
-1. main_adult_datasets_setup.R
-1. main_congenital_datasets_setup.R
-1. helper_script.R
+2. main_adult_datasets_setup.R
+3. main_congenital_datasets_setup.R
+4. helper_script.R
 
 ### Updates to main_adult_datasets_setup.R:
 * The variable infect_yn_xanti_f, an updated version of infect_yn_anti_f that incorporates immunophenotyping data, was added to the adult core dataset. Additionally, the definition of age_enroll was updated to use the now available dob REDCap variable.  
