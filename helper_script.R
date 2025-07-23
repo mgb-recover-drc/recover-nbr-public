@@ -14,7 +14,7 @@ load_libs <- function(add_libs){
 
 # list of common libraries/packages to load in
 load_libs("remotes")
-libs_to_load <- c("tidyverse", "glue", "stringi", "conflicted", "data.table")
+libs_to_load <- c("tidyverse", "glue", "stringi", "conflicted", "data.table", "vroom")
 
 load_libs(libs_to_load)
 
@@ -85,38 +85,46 @@ dd_prep_col_nms <- function(ds_dd_initial) {
   }
 }
 
-# function for grabbing all of the relevant variables from ds_fdata dataset for the current REDCap form
-get_cur_form_ds <- function(full_ds, cur_form, peds_cohort_flag = F, dd = ds_dd, event_map = all_rc_forms_event_map, repeat_form = repeated_rc_forms) {
+# function that creates a named list of datasets, where each data set contains all the relevant variables from ds_fdata dataset for the current REDCap form
+get_cur_form_ds <- function(full_ds, dd, eventmap, peds_cohort_flag = F) {
   
   all_variable_names <- names(full_ds)
   
-  form_vrs <- dd %>% filter(form.name == cur_form, field.type %!in% c("notes")) %>% pull(vr.name)
-  form_vrs_ms <- all_variable_names[unlist(lapply(form_vrs, function(x) grep("^___", gsub(x, "", all_variable_names))))]
-  
-  all_events_for_cur_form <- event_map %>% filter(form %in% cur_form) %>% pull(unique_event_name)
-  
-  if (peds_cohort_flag) {
-    sel_vars <- c(intersect(names(full_ds), c(id_vrs, form_vrs, form_vrs_ms)), paste0(cur_form, "_complete"))
-  } else {
-    sel_vars <- intersect(names(full_ds), c(id_vrs, form_vrs, form_vrs_ms))
-  }
-  
-  cur_form_ds <- full_ds %>% 
-    select(any_of(sel_vars)) %>% 
-    filter(redcap_event_name %in% all_events_for_cur_form) %>% 
-    filter((na_or_blank(redcap_repeat_instrument) & cur_form %!in% repeat_form) | 
-             (redcap_repeat_instrument %in% cur_form & cur_form %in% repeat_form)) %>% 
-    mutate(form = cur_form)
-  
-  stop_check <- if(cur_form %!in% repeat_form) {
-    cur_form_ds %>% filter(n() > 1, .by = c(record_id, redcap_event_name)) %>% nrow()
-  } else {
-    cur_form_ds %>% filter(n() > 1, .by = c(record_id, redcap_event_name, redcap_repeat_instance)) %>% nrow()
-  }
-  
-  if(stop_check > 0) stop("Error: too many rows per identifier")
-  
-  cur_form_ds
+  nlapply(unique(dd$form.name), function(cur_form) {
+    
+    form_vrs <- dd %>% filter(form.name == cur_form, field.type %!in% c("notes")) %>% pull(vr.name)
+    form_vrs_ms <- all_variable_names[unlist(lapply(form_vrs, function(x) grep("^___", gsub(x, "", all_variable_names))))]
+    
+    if (peds_cohort_flag) {
+      sel_vars <- c(intersect(all_variable_names, c(id_vrs, form_vrs, form_vrs_ms)), paste0(cur_form, "_complete"))
+    } else {
+      sel_vars <- intersect(all_variable_names, c(id_vrs, form_vrs, form_vrs_ms))
+    }
+    
+    all_events_for_cur_form <- eventmap %>% filter(form %in% cur_form) %>% pull(unique_event_name)
+    
+    cur_form_ds_all <- full_ds %>% 
+      select(any_of(sel_vars)) %>% 
+      mutate(fdls_recprocessing_n_done = psum(across(any_of(c(setdiff(form_vrs, id_vrs), paste0(cur_form, "_complete"))), \(x) !na_or_blank(x)))) %>% 
+      filter(fdls_recprocessing_n_done > 0) %>% 
+      select(-fdls_recprocessing_n_done) %>% 
+      mutate(form = cur_form)
+    
+    # only keep baseline_arm_1 event rows if the form is covid_treatment, specifically
+    if (cur_form %in% "covid_treatment") {
+      cur_form_ds_all <- cur_form_ds_all %>% 
+        filter(redcap_event_name == "baseline_arm_1")
+    }
+    
+    if(length(setdiff(unique(cur_form_ds_all$redcap_event_name), all_events_for_cur_form)) > 0) print(glue("{cur_form}-extra events done"))
+    if(length(setdiff(all_events_for_cur_form, unique(cur_form_ds_all$redcap_event_name))) > 0) print(glue("{cur_form}-events without data"))
+    
+    stop_check <- cur_form_ds_all %>% filter(n() > 1, .by = c(record_id, redcap_event_name, redcap_repeat_instance)) %>% nrow()
+    
+    if(stop_check > 0) stop("Error: too many rows per identifier")
+    
+    cur_form_ds_all
+  })
 }
 
 # helper function for making a factor out of a case_when statement 

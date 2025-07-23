@@ -20,7 +20,7 @@ setwd(paste0(sbgenomics_path, "/project-files/code/"))
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
 
-bargs <- getArgs(defaults = list(dt = "20250305"))
+bargs <- getArgs(defaults = list(dt = "20250605"))
 
 # check for whether RDs objects already exist in this project's
 if(length(list.files(paste0("../DM/ped/", bargs$dt))) > 0) stop(glue("RDS objects already in existing project - delete RDS files from project-files/DM/ped/{bargs$dt}"))
@@ -50,13 +50,13 @@ ds_cg_dd <- read_csv(file.path(data_loc_cg, ds_dd_path_cg)) %>% dd_prep_col_nms(
 ds_cg_dd$choices.calculations.or.slider.labels[ds_cg_dd$vr.name == "demo_cgrace"] <- paste(sapply(strsplit(ds_cg_dd$choices.calculations.or.slider.labels[ds_cg_dd$vr.name=="demo_cgrace"], "\\|"),
                                                                                                   function(x) str_replace_all(str_replace_all(x, "<br>.+", ""), "\\[sname\\]", "me")), collapse="|")
 
-ds_fdata1 <- read.csv(file.path(data_loc, "RECOVER_Pediatrics_redcap_data.tsv"), 
-                      colClasses="character", sep = "\t") %>%
+ds_fdata_raw <- read.csv(file.path(data_loc, "RECOVER_Pediatrics_redcap_data.tsv"), 
+                         colClasses="character", sep = "\t") %>%
   mutate(across(everything(), ~ conv_prop_type(.x, cur_column(), dd = ds_dd))) %>% 
   select(-any_of("redcap_survey_identifier"))
 
-ds_cg_fdata <- read.csv(file.path(data_loc_cg, "RECOVER_Caregiver_redcap_data.tsv"), 
-                        colClasses="character", sep = "\t") %>%
+ds_cg_fdata_raw <- read.csv(file.path(data_loc_cg, "RECOVER_Caregiver_redcap_data.tsv"), 
+                            colClasses="character", sep = "\t") %>%
   mutate(across(everything(), ~ conv_prop_type(.x, cur_column(), dd = ds_cg_dd))) %>% 
   select(-any_of("redcap_survey_identifier"))
 
@@ -89,16 +89,16 @@ ya_manual <- tribble(
   "hcq_playaffectya"   , "hcq_playaffect"
 )
 
-ya_indices <- grep("ya$", gsub("___.+", "", names(ds_fdata1)))
+ya_indices <- grep("ya$", gsub("___.+", "", names(ds_fdata_raw)))
 
-ya_vrs <- setdiff(names(ds_fdata1)[ya_indices], # This cannot be "ya$" because of multiselects
+ya_vrs <- setdiff(names(ds_fdata_raw)[ya_indices], # This cannot be "ya$" because of multiselects
                   c("sdoh_neighyard", "hcq_playaffect",
                     ya_manual$vr_ya))
 
 ya_df <- tibble(vr_ya = ya_vrs) %>% 
   mutate(vr_base = gsub("ya", "", vr_ya)) %>% 
   bind_rows(ya_manual) %>% 
-  mutate(in_fdata = vr_base %in% names(ds_fdata1),
+  mutate(in_fdata = vr_base %in% names(ds_fdata_raw),
          vr_base_new = paste0("DCCyabase_", vr_base)) %>% 
   filter(in_fdata) 
 
@@ -107,24 +107,14 @@ ya_df_chk <- ya_df %>%
   left_join(ds_dd %>% select(vr_base = vr.name, field_label_base=field.label))
 
 for(i in 1:nrow(ya_df)){
-  ds_fdata1[ya_df$vr_base_new[i]] <- ds_fdata1[ya_df$vr_base[i]]
-  ds_fdata1[[ya_df$vr_base[i]]] <- if_else(ds_fdata1$visit_age >= 18, ds_fdata1[[ya_df$vr_ya[i]]], ds_fdata1[[ya_df$vr_base[i]]])
+  ds_fdata_raw[ya_df$vr_base_new[i]] <- ds_fdata_raw[ya_df$vr_base[i]]
+  ds_fdata_raw[[ya_df$vr_base[i]]] <- if_else(ds_fdata_raw$visit_age >= 18, ds_fdata_raw[[ya_df$vr_ya[i]]], ds_fdata_raw[[ya_df$vr_base[i]]])
   
 }
 
-if(ds_fdata1$enrl_dt[ds_fdata1$record_id == "RP29918-00032" & ds_fdata1$redcap_event_name == "enrollment_arm_1"] == as.Date("2022-11-21")){
-  ds_fdata1$enrl_dt[ds_fdata1$record_id == "RP29918-00032" & ds_fdata1$redcap_event_name == "enrollment_arm_1"]  <- "2023-07-01"
-  ds_fdata1$enrl_acuteyn[ds_fdata1$record_id == "RP29918-00032" & ds_fdata1$redcap_event_name == "enrollment_arm_1"]  <- 0
-  ds_fdata1$enrl_arms[ds_fdata1$record_id == "RP29918-00032" & ds_fdata1$redcap_event_name == "enrollment_arm_1"]  <- "1,4"
-}
-
-ds_fdata <- ds_fdata1
-rm(ds_fdata1)
-
 # Fixing participants with multiple baseline visits
-# Creating ds_fdata_final
 
-ids_w_multiple_bl <- ds_fdata %>% 
+ids_w_multiple_bl <- ds_fdata_raw %>% 
   filter(grepl("baseline|week", redcap_event_name)) %>% 
   mutate(arm = gsub(".+_arm_(\\d)$", "\\1", redcap_event_name)) %>% 
   summarise(n_arms = n_distinct(arm), 
@@ -132,13 +122,13 @@ ids_w_multiple_bl <- ds_fdata %>%
   filter(n_arms > 1) %>%
   pull(record_id)
 
-enrollment_ds <- ds_fdata %>%
+enrollment_ds <- ds_fdata_raw %>%
   filter(redcap_event_name %in% "enrollment_arm_1", 
          na_or_blank(redcap_repeat_instrument)) %>% 
   select(record_id, enrl_arms)
 
 # must determine enrl_arms to determine which baseline visit to keep 
-idvis_to_remove <- ds_fdata %>%
+idvis_to_remove <- ds_fdata_raw %>%
   filter(grepl("baseline|week", redcap_event_name)) %>%
   filter(record_id %in% ids_w_multiple_bl) %>%
   select(record_id, redcap_event_name) %>%
@@ -149,13 +139,12 @@ idvis_to_remove <- ds_fdata %>%
   select(record_id, redcap_event_name) %>% 
   distinct()
 
-ds_fdata_final <- ds_fdata %>%
+ds_fdata <- ds_fdata_raw %>%
   anti_join(idvis_to_remove, by = c("record_id", "redcap_event_name"))
 
 # Fixing participants with multiple baseline visits
-# Creating ds_cg_fdata_final
 
-cg_ids_w_multiple_bl <- ds_cg_fdata %>%
+cg_ids_w_multiple_bl <- ds_cg_fdata_raw %>%
   filter(grepl("baseline|followup", redcap_event_name)) %>%
   mutate(arm = gsub(".+_arm_(\\d)$", "\\1", redcap_event_name)) %>%
   summarise(n_arms = n_distinct(arm), 
@@ -163,13 +152,13 @@ cg_ids_w_multiple_bl <- ds_cg_fdata %>%
   filter(n_arms > 1) %>%
   pull(record_id)  
 
-cg_enrollment_ds <- ds_cg_fdata %>%
+cg_enrollment_ds <- ds_cg_fdata_raw %>%
   filter(redcap_event_name %in% "enrollment_arm_1", 
          na_or_blank(redcap_repeat_instrument)) %>%
   select(record_id, calcarms)
 
 # must determine enrl_arms to determine which baseline visit to keep 
-cg_idvis_to_remove <- ds_cg_fdata %>%
+cg_idvis_to_remove <- ds_cg_fdata_raw %>%
   filter(grepl("baseline", redcap_event_name)) %>%
   filter(record_id %in% cg_ids_w_multiple_bl) %>%
   select(record_id, redcap_event_name) %>%
@@ -181,7 +170,7 @@ cg_idvis_to_remove <- ds_cg_fdata %>%
   select(record_id, redcap_event_name) %>%
   distinct()
 
-ds_cg_fdata_final <- ds_cg_fdata %>%
+ds_cg_fdata <- ds_cg_fdata_raw %>%
   anti_join(cg_idvis_to_remove, by = c("record_id", "redcap_event_name"))
 
 # Essential datasets creation (formds_list, core, etc.) ----
@@ -190,14 +179,8 @@ id_vrs <- c("record_id", "redcap_event_name", "redcap_repeat_instrument", "redca
 
 # formds_list and formds_cg_list: a list of datasets where each one corresponds to all the data in REDCap for a specific form (across all instances)
 
-formds_list <- nlapply(unique(ds_dd$form.name), function(form) {
-  get_cur_form_ds(ds_fdata_final, form, peds_cohort_flag = T)
-})
-
-formds_cg_list <- nlapply(unique(ds_cg_dd$form.name), function(form) {
-  get_cur_form_ds(ds_cg_fdata_final, form, dd = ds_cg_dd, event_map = all_rc_forms_event_map_cg, repeat_form = repeated_rc_forms_cg)
-})
-
+formds_list <- get_cur_form_ds(ds_fdata, ds_dd, all_rc_forms_event_map, peds_cohort_flag = T)
+formds_cg_list <- get_cur_form_ds(ds_cg_fdata, ds_cg_dd, all_rc_forms_event_map_cg)
 
 # core and core_cg: a per-person dataset with individual characteristics (non-repeating) for each participant (i.e. one row per person)
 
@@ -368,14 +351,14 @@ study_grp_levs <- c(
 )
 
 
-fcih_dty_query <- formds_list$first_covid_infection_history %>% 
-  select(record_id, redcap_event_name, fcih_dty) %>%
-  filter(nchar(fcih_dty) != 4) %>% 
-  mutate(query_valtxt = paste0("value: ", fcih_dty, ", 4 characters allowed"),
-         query = "fcih_dty must be only 4 characters long representing year",
-         variable = "fcih_dty",
-         form = "first_covid_infection_history") %>%
-  select(-c(fcih_dty))
+# fcih_dty_query <- formds_list$first_covid_infection_history %>% 
+#   select(record_id, redcap_event_name, fcih_dty) %>%
+#   filter(nchar(fcih_dty) != 4) %>% 
+#   mutate(query_valtxt = paste0("value: ", fcih_dty, ", 4 characters allowed"),
+#          query = "fcih_dty must be only 4 characters long representing year",
+#          variable = "fcih_dty",
+#          form = "first_covid_infection_history") %>%
+#   select(-c(fcih_dty))
 
 # antibody work
 most_recent_ab <- formds_list$antibody_test_results %>% 
@@ -468,6 +451,18 @@ curr_dag <- formds_list$visit_form %>%
   summarise(dag_curr = substr(visit_dag[n()], 1, 4),
             .groups="drop")
 
+### Adding covid_symptoms_complete from BL to core for promotion_probability variable:
+
+cs_complete <- formds_list$covid_symptoms %>% 
+  filter(redcap_event_name %in% c("baseline_arm_4", "week_8_arm_2")) %>% 
+  mutate(t1_symp_form_comp=covid_symptoms_complete %in% 2) %>% 
+  select(record_id, t1_symp_form_comp)
+
+### Adding visit_age at BL to core for promotion_probability variable:
+bl_visit_age <- formds_list$visit_form %>% 
+  filter(redcap_event_name %in% c("baseline_arm_4", "week_8_arm_2")) %>% 
+  select(record_id, visit_age_bl=visit_age)
+
 # --------
 
 
@@ -504,6 +499,8 @@ core <- core_base %>%
   left_join(peds_baseline_any_ds, by = "record_id") %>% 
   left_join(curr_dag, by = "record_id") %>%
   left_join(base_ab, by = join_by(record_id)) %>% 
+  left_join(cs_complete, by= join_by(record_id)) %>% 
+  left_join(bl_visit_age, by= join_by(record_id)) %>%
   left_join(antibody_results, by = "record_id") %>%
   fix_yeardt("fcih") %>% 
   fix_yeardt("mrcih") %>% 
@@ -662,7 +659,39 @@ core <- core_base %>%
               mutate(has_maincg = T), 
             by = "enrl_cgid") %>% 
   mutate(has_maincg = case_when(is.na(has_maincg) ~ F,
-                                .default = T))
+                                .default = T),
+         ptf_category = factor(case_when(ptf_acute == 1 & ptf_infected == 1 ~ "Acute infected",
+                                         ptf_acute == 1 & ptf_infected == 0 ~ "Acute uninfected",
+                                         ptf_infected == 1 & ptf_100v2_reftype == 1 ~ "Recruited from long COVID clinic",
+                                         ptf_infected == 1 & (ptf_100a | ptf_100b | ptf_100c | ptf_100d | ptf_100v2_pascdiageval | ptf_100v2_misc) ~ "Post-acute infected, high (not recruited from long COVID clinic)",
+                                         ptf_infected == 1 & (ptf_50a | ptf_50b | ptf_50c) ~ "Post-acute infected, medium",
+                                         ptf_infected == 1 ~ "Post-acute infected, low",
+                                         ptf_infected == 0 ~ "Post-acute uninfected"),
+                               levels = c("Acute infected",
+                                          "Post-acute infected, low",
+                                          "Post-acute infected, medium",
+                                          "Post-acute infected, high (not recruited from long COVID clinic)", 
+                                          "Recruited from long COVID clinic",
+                                          "Acute uninfected",
+                                          "Post-acute uninfected"),
+                               ordered = T),
+         promotion_probability=case_when(ptf_category %in% "Post-acute uninfected" & ptf_algovnum %in% 1 & ptf_tassoresult==0~0.4,
+                                         ptf_category %in% "Post-acute uninfected" & ptf_algovnum %in% 1 & ptf_tassoresult%in% NA~0,
+                                         is.na(ptf_algovnum)~0,
+                                         !t1_symp_form_comp~0,
+                                         t1_symp_form_comp & ptf_category %in% "Post-acute infected, low" & ptf_algovnum %in% c(1:2) ~0.2,
+                                         t1_symp_form_comp & ptf_category %in% "Post-acute infected, low" & ptf_algovnum %in% c(3) ~1,
+                                         t1_symp_form_comp & ptf_category %in% "Post-acute infected, medium" & ptf_algovnum %in% 1~0.5,
+                                         t1_symp_form_comp & ptf_category %in% "Post-acute infected, medium" & ptf_algovnum %in% c(2:3)~1,
+                                         t1_symp_form_comp & visit_age_bl <2 & ptf_category %in% "Post-acute uninfected" & ptf_algovnum %in% 2~0.4,
+                                         t1_symp_form_comp & visit_age_bl >=2 & ptf_category %in% "Post-acute uninfected" & ptf_algovnum %in% 2 & ptf_tassoresult==0~0.4,
+                                         t1_symp_form_comp & visit_age_bl >=2 & ptf_category %in% "Post-acute uninfected" & ptf_algovnum %in% c(2:3) & ptf_tassoresult%in% NA~0,
+                                         t1_symp_form_comp & visit_age_bl >=2 & ptf_category %in% "Post-acute uninfected" & ptf_algovnum %in% 3 & ptf_tassoresult==0~1,
+                                         t1_symp_form_comp & visit_age_bl <2 & ptf_category %in% "Post-acute uninfected" & ptf_algovnum %in% 3~1,
+                                         t1_symp_form_comp & ptf_category %in% c("Post-acute infected, high (not recruited from long COVID clinic)", 
+                                                                                 "Recruited from long COVID clinic")~1,
+                                         t1_symp_form_comp & ptf_acute==1~1),
+         promotion_weights=1/promotion_probability)
 
 # Labs datasets creation
 
@@ -981,7 +1010,7 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
   first_name_cs = which(all_names_cs == "ps_colldt")
   last_name_cs = which(all_names_cs == "covid_symptoms_complete") - 1
   if(missing(dd)){
-    ignore_vrs <- c("ps_coord___1", "ps_colllang", "ps_infected", "ps_mens", 
+    ignore_vrs <- c("ps_coord___1", "ps_colllang", "ps_mens", 
                     "ps_stext_2_4_wk", "ps_stext_2_4_wk_es", "ps_stext_8_wk", 
                     "ps_stext_8_wk_es")
   } else {
@@ -990,6 +1019,7 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
              field.type == "calc" | grepl("@CALCTEXT", field.annotation)) %>% 
       pull(vr.name)
   }
+  
   
   
   all_data_cs <- setdiff(all_names_cs[first_name_cs:last_name_cs], ignore_vrs)
@@ -1008,7 +1038,7 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
   visit_ds <- ds %>% 
     left_join(core_ds %>% select(record_id, arm_num, infect_yn_f, study_grp,biosex_f, enrl_dob), by="record_id") %>% 
     left_join(form_cs %>% 
-                select(record_id, redcap_event_name, ps_colldt, ps_mens, all_of(pcs$vr.name)) %>% 
+                select(record_id, redcap_event_name, ps_colldt, ps_mens, ps_infected,all_of(pcs$vr.name)) %>% 
                 mutate(across(contains("musicul"), \(x) case_when(x == "No" ~ 0,
                                                                   grepl("^Yes.*no longer.*$", x) ~ 6,
                                                                   grepl("^Yes.*still.*$", x) ~ 7))), 
@@ -1030,7 +1060,7 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
   ds_base0 <- visit_ds %>% 
     pivot_longer(!c(record_id, arm_num,enrl_dob, visit_age, age_strata,
                     infect_yn_f, infect_yn, study_grp, biosex_f,
-                    redcap_event_name, ps_colldt, ps_mens),
+                    redcap_event_name, ps_colldt, ps_mens, ps_infected),
                  names_sep = "_",
                  names_to = c("fm", "symptom", "vr_tm"),
                  values_to = "value") %>% 
@@ -1070,8 +1100,8 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
   # This depends on the question asked to MUSIC ppts - need to confirm  
   ds_4wk <- ds_base %>% 
     filter((!grepl("RP253", record_id) & arm_num == 2 & redcap_event_name %in% c("week_8_arm_2") & vr_tm == "a84") |
-             (!grepl("RP253", record_id) & arm_num == 4 & infect_yn_f == "Infected" & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pilt") |
-             (!grepl("RP253", record_id) & study_grp == "Uninfected" & arm_num == 4 & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pnlt") |
+             (!grepl("RP253", record_id) & arm_num == 4 & ((!is.na(ps_infected) & ps_infected == 1)| is.na(ps_infected) & infect_yn_f %in% "Infected") & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pilt") |
+             (!grepl("RP253", record_id) & ((!is.na(ps_infected) & ps_infected == 0)| is.na(ps_infected) & infect_yn_f %in% "Uninfected") & arm_num == 4 & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pnlt") |
              (!grepl("RP253", record_id) & grepl("_arm_5$", redcap_event_name) & vr_tm == "lt") |
              (grepl("RP253", record_id) & grepl("month", redcap_event_name) & vr_tm == "musicul")) %>%
     comb_select("final_")
@@ -1098,7 +1128,7 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
   
   all_vrs <- ds_base %>% 
     select(record_id, redcap_event_name, age_strata, biosex_f, 
-           infect_yn_f, study_grp, infect_yn, ps_colldt) %>% 
+           infect_yn_f, study_grp, infect_yn, ps_colldt, ps_infected) %>% 
     distinct()
   
   ds_out <- ds_4wk %>% 
@@ -1128,7 +1158,7 @@ mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_sympto
            lasso_answer_fu=ifelse(grp_not_elig_age==F,as.numeric(sum_lasso_fu>0), persistent_ans_fu),
            lasso_answer2=ifelse(grp_not_elig_age==F, as.numeric(sum_lasso2>0), persistent_ans2)) %>% 
     summarise(.by=c(record_id, redcap_event_name, age_strata, biosex_f,infect_yn_f,
-                    study_grp,infect_yn,ps_colldt,!!sym(symp_vr), lasso_answer,lasso_answer_fu, lasso_answer2))
+                    study_grp,infect_yn,ps_infected,ps_colldt,!!sym(symp_vr), lasso_answer,lasso_answer_fu, lasso_answer2))
   
   ds_out
 }
@@ -1279,7 +1309,7 @@ peds_pasc_fxn <- function(long_df, scores=score_tab, cutoff=cutoff_df, lasso_ans
   } else {
     wide_df <- long_df %>% 
       select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_colldt,
-             infect_yn, lasso_answer, lasso_answer_fu, lasso_symps) %>% 
+             infect_yn, ps_infected, lasso_answer, lasso_answer_fu, lasso_symps) %>% 
       pivot_wider(names_from=lasso_symps, values_from = c(lasso_answer, lasso_answer_fu),
                   names_glue="{ifelse(.value=='lasso_answer', lasso_symps, paste0(lasso_symps, '_now'))}") %>% 
       left_join(ds_score %>% 
@@ -1291,7 +1321,7 @@ peds_pasc_fxn <- function(long_df, scores=score_tab, cutoff=cutoff_df, lasso_ans
                 by = join_by(record_id, redcap_event_name))
     
     long_score <- long_df %>% 
-      select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_colldt,
+      select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_infected,  ps_colldt,
              infect_yn, starts_with("pasc_cc_"), lasso_answer_fu, lasso_answer, lasso_symps) %>% 
       left_join(ds_score %>% 
                   select(record_id, redcap_event_name, score_sum, cutoff, n_na_score_symps, n_score_symps, starts_with("pasc")),
@@ -1353,8 +1383,8 @@ started_ps = formds_list$covid_symptoms %>%
   mutate(across(everything(), as.character)) %>%
   pivot_longer(cols=all_of(all_data_cs)) %>%
   mutate(ms_flag = grepl("___", name)) %>%
-  summarise(n_entered = sum((ms_flag & value %in% 1) | (!ms_flag & !is.na(value))),
-            .by=c(record_id, redcap_event_name))
+  summarise(n_entered = sum((ms_flag & value %in% 1) | (!ms_flag & !na_or_blank(value))),
+            .by=c(record_id, redcap_event_name)) 
 
 symp_ds <- started_ps %>% 
   filter(n_entered > 0) %>% 
