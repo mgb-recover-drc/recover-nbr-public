@@ -1,7 +1,7 @@
 # recover-nbr-public: Public code repository for the Network of Biostatisticians for RECOVER
 
 # Manuscript code
-Code used for some RECOVER manuscript analyses will be made available in a "manuscripts" folders within each cohort directory. This code will not necessarily run directly from the data available on Seven Bridges, but can be used as a reference.
+Code used for some RECOVER manuscript analyses will be made available in a "manuscripts" folder within each cohort directory. This code will not necessarily run directly from the data available on Seven Bridges, but can be used as a reference.
 
 # Code updates 
 This code base is typically updated every three months, following a data release on Seven Bridges. Major changes from each update are described in this README.
