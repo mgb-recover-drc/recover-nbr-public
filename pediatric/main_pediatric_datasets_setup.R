@@ -15,15 +15,22 @@ get_folder_path <- function(loc = "", fld_str) {
 }
 
 sbgenomics_path <- get_folder_path(fld_str = "sbgenomics")
-setwd(paste0(sbgenomics_path, "/project-files/code/"))
+
+set_resp <- tryCatch(setwd(paste0(sbgenomics_path, "/project-files/code/")), error= function(e) "Likely an internal run")
+
+if(set_resp == "Likely an internal run"){
+  repo_top_loc <- gsub("recover-nbr.+", "recover-nbr", getwd())
+  setwd(repo_top_loc)
+}
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
+bargs <- getArgs(defaults = list(dt = "20250906"))
 
-bargs <- getArgs(defaults = list(dt = "20250605"))
 
-# check for whether RDs objects already exist in this project's
-if(length(list.files(paste0("../DM/ped/", bargs$dt))) > 0) stop(glue("RDS objects already in existing project - delete RDS files from project-files/DM/ped/{bargs$dt}"))
+# check for whether qs2 objects already exist in this project's
+if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/ped/"), bargs$dt))) > 0) 
+  stop(glue("qs2 objects already in existing project - delete qs2 files from project-files/DM/ped/{bargs$dt}"))
 
 # Load all relevant RECOVER pediatric and caregiver REDCap files -- 
 dm_rt_dt <- bargs$dt
@@ -31,8 +38,8 @@ dm_rt_dt_y <- substr(dm_rt_dt, 1, 4)
 dm_rt_dt_m <- substr(dm_rt_dt, 5, 6)
 
 pf_loc <- get_folder_path(fld_str = "project-files") # project-files folder location (for current Seven Bridges environment)
-data_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERPediatricMain_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricMain_REDCap_{dm_rt_dt}")
-data_loc_cg_partial <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERPediatricCaregiver_{dm_rt_dt_y}{dm_rt_dt_m}.1/")
+data_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricMain_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricMain_REDCap_{dm_rt_dt}")
+data_loc_cg_partial <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricCaregiver_{dm_rt_dt_y}{dm_rt_dt_m}.1/")
 data_loc_cg_final_fol <- grep("PediatricCaregiver_REDCap", list.files(data_loc_cg_partial), value = T)
 data_loc_cg <- glue("{data_loc_cg_partial}{data_loc_cg_final_fol}")
 
@@ -50,7 +57,7 @@ ds_cg_dd <- read_csv(file.path(data_loc_cg, ds_dd_path_cg)) %>% dd_prep_col_nms(
 ds_cg_dd$choices.calculations.or.slider.labels[ds_cg_dd$vr.name == "demo_cgrace"] <- paste(sapply(strsplit(ds_cg_dd$choices.calculations.or.slider.labels[ds_cg_dd$vr.name=="demo_cgrace"], "\\|"),
                                                                                                   function(x) str_replace_all(str_replace_all(x, "<br>.+", ""), "\\[sname\\]", "me")), collapse="|")
 
-ds_fdata_raw <- read.csv(file.path(data_loc, "RECOVER_Pediatrics_redcap_data.tsv"), 
+ds_fdata_raw <- read.csv(file.path(data_loc, "RECOVER_Pediatric_redcap_data.tsv"), 
                          colClasses="character", sep = "\t") %>%
   mutate(across(everything(), ~ conv_prop_type(.x, cur_column(), dd = ds_dd))) %>% 
   select(-any_of("redcap_survey_identifier"))
@@ -782,6 +789,18 @@ labs_simp_long_chr <- labs_comb_long %>%
 labs_simp_wide_chr <- labs_simp_long_chr %>%
   pivot_wider(names_from = panel_lab, values_from = lab_val_chr)
 
+t3labs_long <- piv_lab_form(formds_list$tier_3_labs, "t3lab", "tier_3_labs_complete", extra_piv_vrs = "t3lab_dt") %>% 
+  left_join(lab_unit_info, by=join_by(t3lab_nm == vr.name)) %>% 
+  left_join(lab_panels, by = join_by(lab_nm)) %>% 
+  left_join(conv, by = join_by(lab_nm)) %>% 
+  add_wbc_fxn() %>% 
+  mutate(cf_num = case_when(grepl("wbc_val", conversionfactor) ~ 100/wbc_val,
+                            .default = as.numeric(conversionfactor)),
+         conv = as.numeric(t3lab_val) * cf_num,
+         lab_nm_meaning = case_when(grepl("ab$", lab_nm) ~ "Abnormal",
+                                    grepl("u$", lab_nm) ~ "Unit",
+                                    .default = "Value")) %>%
+  relocate(lab_nm_meaning, .after = "lab_nm")
 
 # Creation of symp_ds_plist dataset -------------------------------------------------------------
 
@@ -1396,7 +1415,7 @@ symp_ds_plist <- symp_ds %>%
   peds_pasc_fxn()
 
 
-# Saving .rds objects for everything created here
+# Saving .qs2 objects for everything created here
 # located in Home > DM > pediatric_caregiver
 dm_dir <- glue("{get_folder_path(fld_str='output-files')}/DM/ped/{dm_rt_dt}")
 if(!file.exists(dm_dir)) dir.create(dm_dir, recursive = T)
@@ -1406,11 +1425,12 @@ lapply(ls(), function(obj){
     fdsl_obj <- eval(parse(text = paste0("`", obj, "`")))
     all_forms <- names(fdsl_obj)
     lapply(all_forms, function(fm){
-      saveRDS(fdsl_obj[[fm]], file.path(dm_dir, paste0(obj, "_", fm, "_rdsfxnobjhlpr", ".rds")))
+      qs_save(fdsl_obj[[fm]], file.path(dm_dir, paste0(obj, "_", fm, "_rdsfxnobjhlpr", ".qs2")))
     })
   } else {
-    saveRDS(eval(parse(text = paste0("`", obj, "`"))), file.path(dm_dir, paste0(obj, ".rds")))
+    qs_save(eval(parse(text = paste0("`", obj, "`"))), file.path(dm_dir, paste0(obj, ".qs2")))
   }
 })
+
 
 

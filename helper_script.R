@@ -14,7 +14,7 @@ load_libs <- function(add_libs){
 
 # list of common libraries/packages to load in
 load_libs("remotes")
-libs_to_load <- c("tidyverse", "glue", "stringi", "conflicted", "data.table", "vroom")
+libs_to_load <- c("tidyverse", "glue", "stringi", "conflicted", "data.table", "vroom", "qs2")
 
 load_libs(libs_to_load)
 
@@ -274,56 +274,92 @@ conv_prop_type <- function(cur_vrb_col, vrb_name, dd=ds_dd, verbose = F) {
   } else return(cur_vrb_col)
 }
 
+qs_read1 <- function(ds, ...){
+  qs_read(ds, nthreads=qopt("nthreads", 1), ...)
+}
+
 get_env_list <- function(coh, dt){
   
   if(missing(coh)) stop("You must provide a cohort name")
-  dm_rt_base <- glue("{get_folder_path(fld_str = 'project-files')}/DM")
-  dm_rc_pulls_dir <- list.files(dm_rt_base, pattern=paste0(coh, "$"), full.names = T)
-  if(missing(dt)) dt <- suppressWarnings(max(as.numeric(list.files(dm_rc_pulls_dir)), na.rm=T))
+  if(!(coh %in% c("adult", "ped", "cong", "autopsy"))) stop("The first parameter needs to be one of adult, ped, cong, or autopsy")
+  dm2_rt_base <- glue("{get_folder_path(fld_str = 'project-files')}/DM")
+  dm2_rc_pulls_dir <- list.files(dm2_rt_base, pattern=paste0(coh, "$"), full.names = T)
+  if(missing(dt)) dt <- suppressWarnings(max(as.numeric(list.files(dm2_rc_pulls_dir)), na.rm=T))
   print(glue("loading data from {dt}"))
-  env_loc <- file.path(dm_rc_pulls_dir, dt)
+  env_loc <- file.path(dm2_rc_pulls_dir, dt)
   
-  all_rds <- list.files(env_loc, pattern=".rds$")
-  
-  fds_lists <- paste0(unique(gsub("_list_.+", "", grep("_list.+_rdsfxnobjhlpr.rds", all_rds, value=T))), "_list.rds")
+  all_rds <- list.files(env_loc, pattern="\\.rds$|\\.qs2")
   
   out_list <- lapply(all_rds, function(fl){
-    
-    if(fl %in% fds_lists) {
-      
-    } else {
-      return(eval(parse(text = paste0("function() {tm1 = Sys.time(); outds <- read_rds('", file.path(env_loc, fl), "'); tm2 = Sys.time(); message(paste0('Load time: ', format(round(tm2 - tm1, 3), nsmall = 3))); return(outds)}"))))
-    }
+    read_fxn <- ifelse(grepl("rds$", fl), "read_rds", "qs_read1")
+    return(eval(parse(text = paste0("function() {tm1 = Sys.time(); outds <- ",
+                                    read_fxn, 
+                                    "('", 
+                                    file.path(env_loc, fl), 
+                                    "'); tm2 = Sys.time(); message(paste0('Load time: ', format(round(tm2 - tm1, 3), nsmall = 3))); return(outds)}"))))
   })
-  names(out_list) <- gsub(".rds$", "", all_rds)
   
-  for(fdsl in fds_lists){
-    rds_fdsl_fxngen <- function() {
-      local_dir <- env_loc
-      flnm <- gsub(".rds", "", fdsl)
-      function(...){
-        forms <- c(...)
-        tm1 = Sys.time()
-        print(paste("Reading from ", local_dir))
-        out_list <- if(length(forms) == 0){
-          all_forms <- list.files(local_dir, 
-                                  pattern = paste0(flnm, "_.+_rdsfxnobjhlpr.rds"),
-                                  full.names = T)
-          setNames(lapply(all_forms, function(x) read_rds(x)), 
-                   gsub(paste0(".+", flnm, "_|_rdsfxnobjhlpr.rds"), "", all_forms))
+  names(out_list) <- gsub("\\.rds$|\\.qs2$", "", all_rds)
+  fds_lists_srch <- grep("_list.+_rdsfxnobjhlpr\\.", all_rds, value=T)
+  fds_lists <- paste0(unique(gsub("_list_.+", "", fds_lists_srch)), "_list")
+  if(length(fds_lists_srch) == 0){
+    warning("no formds_list files were found")
+    warning(glue("env_list has {length(out_list)} elements"))
+  } else {
+    for(fds_list in fds_lists){
+      rds_fdsl_fxngen <- function() {
+        local_dir <- env_loc
+        
+        fds_ds <- data.frame(full = list.files(local_dir, pattern = paste0(fds_list, "_.+_rdsfxnobjhlpr\\..+"))) %>% 
+          mutate(obj = gsub(".+_list_|_rdsfxnobjhlpr.+", "", full)) %>% 
+          mutate(type = ifelse(grepl("\\.rds$", full), "rds", "qs2"))
+        
+        if(any(duplicated(fds_ds$full))) stop("Why are there duplicated form names in REDCap?")
+        
+        fds_nm <- gsub("_list_.+", "_list", fds_ds$full[1])
+        
+        fxn_block <- "
+        fms <- unlist(as.list(environment()))
+        if(any(fms == 'TRUE')) {
+          forms <- unique(c(..., names(fms[fms == 'TRUE'])))
         } else {
-          nlapply(forms, function(form) read_rds(file.path(local_dir, paste0(flnm, "_", form, "_rdsfxnobjhlpr", ".rds"))))
+          forms <- unique(c(...))
+        }
+        
+        tm1 = Sys.time()
+        print(paste('Reading from ', local_dir))
+        
+        
+        outfds_list <- if(length(forms) == 0){
+          setNames(lapply(1:nrow(fds_ds), \\(i) {
+            
+            read_fxn <- ifelse(fds_ds$type[i] == 'rds', read_rds, qs_read1)
+            read_fxn(file.path(local_dir, fds_ds$full[i]))
+          }), fds_ds$obj)
+        } else {
+          nlapply(forms, \\(form) {
+            fds_dsx <- fds_ds %>% filter(obj == !!form)
+            if(nrow(fds_dsx) == 0) stop(paste(form, 'not a REDCap form'))
+            read_fxn <- ifelse(fds_dsx$type == 'rds', read_rds, qs_read1)
+            read_fxn(file.path(local_dir, fds_dsx$full))
+          })
         }
         tm2 = Sys.time()
         message(paste0('Load time: ', format(round(tm2 - tm1, 3), nsmall = 3)))
-        return(out_list)
+        return(outfds_list)
+        "
+        params <- paste0(fds_ds$obj, "=F", collapse=", ")
+        fxn_str <- glue("function(..., **params**){**fxn_block**}", 
+                        .open="**", .close="**")
+        eval(parse(text=fxn_str))
+        
       }
+      out_list[[fds_list]] <- rds_fdsl_fxngen()
     }
-    out_list[[gsub(".rds", "", fdsl)]] <- rds_fdsl_fxngen()
   }
+  
   out_list
 }
-
 # getArgs function by Chris Wallace (user chr1swallace on GitHub)
 getArgs <- function(verbose = FALSE, defaults = NULL) {
   
@@ -448,4 +484,30 @@ fix_yeardt <- function(ds, vr_pf){
   
 }
 
+piv_lab_form <- function(ds, prefix, comp_vr, prefix_gen= "lab", extra_piv_vrs=NULL){
+  ds %>% 
+    select(-any_of(c('redcap_repeat_instrument', 'redcap_repeat_instance', 'form', paste0(prefix, c('_biosex', '_fversion', '_fqueries')), comp_vr))) %>% 
+    mutate(across(everything(), as.character)) %>% 
+    pivot_longer(cols=-all_of(c('record_id', 'redcap_event_name', extra_piv_vrs)),
+                 names_to = paste0(prefix, "_nm"), 
+                 values_to = paste0(prefix, "_val")) %>% 
+    filter(!is.na(!!sym(paste0(prefix, "_val")))) %>% 
+    mutate(lab_nm = gsub(paste0("^", prefix), prefix_gen, !!sym(paste0(prefix, "_nm")))) %>% 
+    filter(!(grepl("nn___1$", lab_nm) & !!sym(paste0(prefix, "_val")) == 0))
+}
 
+
+add_wbc_fxn <- function(ds){
+  if(!any(ds$lab_nm %in% "lab_wbc")){
+    return(ds %>% mutate(wbc_val = NA))
+  } 
+  
+  ds %>% 
+    left_join(ds %>% 
+                filter(lab_nm == "lab_wbc") %>% 
+                select(record_id, redcap_event_name, wbc_val = lab_val) %>% 
+                filter(row_number() == 1, 
+                       .by=c(record_id, redcap_event_name)) %>% 
+                mutate(across(wbc_val, as.numeric)),
+              by=join_by(record_id, redcap_event_name))
+}
