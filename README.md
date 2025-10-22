@@ -6,6 +6,26 @@ Code used for some RECOVER manuscript analyses will be made available in a "manu
 # Code updates 
 This code base is typically updated every three months, following a data release on Seven Bridges. Major changes from each update are described in this README.
 
+## October 15, 2025
+
+Files updated:
+1. main_adult_datasets_setup.R
+2. main_pediatric_datasets_setup.R
+3. main_congenital_datasets_setup.R
+4. helper_script.R
+
+### General updates across all setup scripts:
+* The format of the saved R object files was updated from .RDS to .qs2, for speed and efficiency purposes
+
+### Updates to main_pediatric_datasets_setup.R:
+* t3labs_long dataset added to script
+
+### Updates to helper_script.R:
+* Two functions - piv_lab_form and add_wbc_fxn – were added to the script to create t3labs_long
+* The get_env_list function was updated to handle the new .qs2 format of the saved R object files (however, the function is still compatible with existing RDS objects)
+  * Function qs_read1, used in updated version of get_env_list, added to script
+
+
 ## July 16, 2025 - Adult
 Files updated:
 1. main_adult_datasets_setup.R
