@@ -15,15 +15,21 @@ get_folder_path <- function(loc = "", fld_str) {
 }
 
 sbgenomics_path <- get_folder_path(fld_str = "sbgenomics")
-setwd(paste0(sbgenomics_path, "/project-files/code/"))
+set_resp <- tryCatch(setwd(paste0(sbgenomics_path, "/project-files/code/")), error= function(e) "Likely an internal run")
+
+if(set_resp == "Likely an internal run"){
+  repo_top_loc <- gsub("recover-nbr.+", "recover-nbr", getwd())
+  setwd(repo_top_loc)
+}
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
 
-bargs <- getArgs(defaults = list(dt = "20250305"))
+bargs <- getArgs(defaults = list(dt = "20250906"))
 
-# check for whether RDs objects already exist in this project's
-if(length(list.files(paste0("../DM/congenital/", bargs$dt))) > 0) stop(glue("RDS objects already in existing project - delete RDS files from project-files/DM/congenital/{bargs$dt}"))
+# check for whether qs2 objects already exist in this project's
+if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/congenital/"), bargs$dt))) > 0) 
+  stop(glue("qs2 objects already in existing project - delete qs2 files from project-files/DM/congenital/{bargs$dt}"))
 
 # load all relevant RECOVER congenital REDCap files  
 dm_rt_dt <- bargs$dt
@@ -31,7 +37,7 @@ dm_rt_dt_y <- substr(dm_rt_dt, 1, 4)
 dm_rt_dt_m <- substr(dm_rt_dt, 5, 6)
 
 pf_loc <- get_folder_path(fld_str = "project-files") # project-files folder location (for current Seven Bridges environment)
-data_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERPediatricCongenital_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVREPediatricCongenital_REDCap_{dm_rt_dt}")
+data_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricCongenital_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVREPediatricCongenital_REDCap_{dm_rt_dt}")
 
 ds_dd_path <- list.files(data_loc, pattern = "RECOVER.*_DataDictionary_.*.csv")
 ds_dd <- read_csv(file.path(data_loc, ds_dd_path)) %>% dd_prep_col_nms()
@@ -57,11 +63,7 @@ adult_env_list <- get_env_list("adult")
 core_adult_full <- adult_env_list$core_adult_full()
 
 # formds_list: a list of datasets where each one corresponds to all the data in REDCap for a specific form (across all instances)
-
-formds_list <- nlapply(unique(ds_dd$form.name), function(form) {
-  get_cur_form_ds(ds_fdata, form)
-})
-
+formds_list <- get_cur_form_ds(ds_fdata, ds_dd, all_rc_forms_event_map)
 
 # core: a per-person dataset with individual characteristics (non-repeating) for each particiant (i.e. one row per person)
 
@@ -144,7 +146,7 @@ core <- core_initial %>%
          days_pinf_dob_cut = cut(days_pinf_dob/30.4, seq(0, 48), include.lowest = T)
   )
 
-# Saving .rds objects for everything created here
+# Saving .qs2 objects for everything created here
 dm_dir <- glue("{get_folder_path(fld_str='output-files')}/DM/congenital/{dm_rt_dt}")
 if(!file.exists(dm_dir)) dir.create(dm_dir, recursive = T)
 
@@ -153,10 +155,11 @@ lapply(ls(), function(obj){
     fdsl_obj <- eval(parse(text = paste0("`", obj, "`")))
     all_forms <- names(fdsl_obj)
     lapply(all_forms, function(fm){
-      saveRDS(fdsl_obj[[fm]], file.path(dm_dir, paste0(obj, "_", fm, "_rdsfxnobjhlpr", ".rds")))
+      qs_save(fdsl_obj[[fm]], file.path(dm_dir, paste0(obj, "_", fm, "_rdsfxnobjhlpr", ".qs2")))
     })
   } else {
-    saveRDS(eval(parse(text = paste0("`", obj, "`"))), file.path(dm_dir, paste0(obj, ".rds")))
+    qs_save(eval(parse(text = paste0("`", obj, "`"))), file.path(dm_dir, paste0(obj, ".qs2")))
   }
 })
+
 

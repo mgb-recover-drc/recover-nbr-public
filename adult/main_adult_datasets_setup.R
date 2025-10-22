@@ -28,10 +28,11 @@ if(set_resp == "Likely an internal run"){
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
-bargs <- getArgs(defaults = list(dt = "20250606", add_log=0))
+bargs <- getArgs(defaults = list(dt = "20250906", add_log=0))
 
-# check for whether RDs objects already exist in this project's
-if(length(list.files(paste0("../DM/adult/", bargs$dt))) > 0) stop(glue("RDS objects already in existing project - delete RDS files from project-files/DM/adult/{bargs$dt}"))
+# check for whether qs2 objects already exist in this project's
+if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/adult/"), bargs$dt))) > 0) 
+  stop(glue("qs2 objects already in existing project - delete qs2 files from project-files/DM/adult/{bargs$dt}"))
 
 # load all relevant RECOVER adult REDCap files 
 dm_rt_dt <- bargs$dt 
@@ -53,7 +54,11 @@ if(bargs$add_log == 1){
   cat(glue("------------------- adult run log file - {format(Sys.time(), '%H:%M')} ------------------- \n\n"))
 }
 
-data_loc <- glue("{pf_loc}/RECOVERAdult_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERAdult_REDCap_{dm_rt_dt}")
+top_level_data_loc <- ifelse(glue("RECOVERAdult_Data_{dm_rt_dt_y}{dm_rt_dt_m}.1") %in% list.files(glue("{pf_loc}")), 
+                             glue("{pf_loc}/RECOVERAdult_Data_{dm_rt_dt_y}{dm_rt_dt_m}.1"),
+                             glue("{pf_loc}/RECOVERAdult_Data_{dm_rt_dt_y}.{dm_rt_dt_m}"))
+
+data_loc <- glue("{top_level_data_loc}/RECOVERAdult_REDCap_{dm_rt_dt}")
 
 ds_dd_path <- list.files(data_loc, pattern = "RECOVER.*_DataDictionary_.*.csv")
 ds_dd <- read_csv(file.path(data_loc, ds_dd_path)) %>% dd_prep_col_nms()
@@ -67,7 +72,7 @@ all_rc_forms_event_map <- read_csv(file.path(data_loc, event_map_path))
 repeat_forms_path <- list.files(data_loc, pattern="RECOVER.*_repeatforms_.*.csv") 
 repeated_rc_forms <- unique(read_csv(file.path(data_loc, repeat_forms_path)) %>% pull(form_name))
 
-mulligan_data_path <- glue("{pf_loc}/RECOVERAdult_Data_{dm_rt_dt_y}.{dm_rt_dt_m}/RECOVERAdult_BiostatsDerived_{dm_rt_dt}/mulligan_data.csv")
+mulligan_data_path <- glue("{top_level_data_loc}/RECOVERAdult_BiostatsDerived_{dm_rt_dt}/mulligan_data.csv")
 mull_upload_data <- read_csv(file.path(mulligan_data_path))
 
 # Essential datasets creation (formds_list, core, etc.) ----
@@ -86,7 +91,7 @@ fds_list_total_time <- format(round(fds_list_t2 - fds_list_t1, 3), nsmall = 3)
 
 cat(glue("------------------- formds_list created - Total time: {fds_list_total_time} ------------------- \n\n"))
 
-# core: a per-person dataset with individual characteristics (non-repeating) for each particiant (i.e. one row per person)
+# core: a per-person dataset with individual characteristics (non-repeating) for each participant (i.e. one row per person)
 
 # all of the forms in REDCap that appear a single visit and are non-repeating
 all_single_instance_forms <- all_rc_forms_event_map %>% 
@@ -1529,17 +1534,17 @@ pasc_gen_fxn <- function(pds) {
 ps_pasc_ds <- pasc_gen_fxn(ps_combined_pheno) %>% 
   filter(!((is.na(pasc_dt)) & (pasc_nvals_2023 %in% 0) & (pasc_nvals_2024 %in% 0)))
 
-# Saving .rds objects for everything created here
+# Saving qs2 objects for everything created here
 
 save_list <- lapply(ls(), function(obj){
   fdsl_obj <- eval(parse(text = paste0("`", obj, "`")))
   if(obj %in% c("formds_list")) {
     all_forms <- names(fdsl_obj)
     lapply(all_forms, function(fm){
-      saveRDS(fdsl_obj[[fm]], file.path(dm_dir, paste0(obj, "_", fm, "_rdsfxnobjhlpr", ".rds")))
+      qs_save(fdsl_obj[[fm]], file.path(dm_dir, paste0(obj, "_", fm, "_rdsfxnobjhlpr", ".qs2")))
     })
   } else {
-    saveRDS(fdsl_obj, file.path(dm_dir, paste0(obj, ".rds")))
+    qs_save(fdsl_obj, file.path(dm_dir, paste0(obj, ".qs2")))
   }
   return(class(fdsl_obj))
 })
