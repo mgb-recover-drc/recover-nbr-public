@@ -6,6 +6,33 @@ Code used for some RECOVER manuscript analyses will be made available in a "manu
 # Code updates 
 This code base is typically updated every three months, following a data release on Seven Bridges. Major changes from each update are described in this README.
 
+## February 3, 2026
+
+Files updated:
+1. main_adult_datasets_setup.R
+2. main_pediatric_datasets_setup.R
+3. helper_script.R
+
+### Updates to main_adult_datasets_setup.R:
+* Several new variables identified in adult SDOH paper added to core dataset, namely: sd_finhardship, sd_foodinsec, sd_meddis and sd_skipcare (already existed, but more explicitly defined now)
+* Because the Mulligan data set was not included in this latest data release on Seven Bridges, the following variables are no longer available in core: mull_comb_res and infect_yn_xanti_f
+* The enrl_immunophenotype variable in core was redefined using data from the immune_tmp dataset included in the BiostatsDervied related folder of Files section on Seven Bridges
+
+### Updates to main_pediatric_datasets_setup.R:
+* A zip code database csv was added to the files section for each node. This file path to this csv exists as zip_code_db_dir and is necessary to create the region_state, region and region_f variables in core_cg and core. 
+* Variable addr_zip5 added to core_cg. 
+* If the zip code database was added to the node file section, then the variables region_state, region and region_f are now included in core_cg. 
+* Variable addr_zipya 5 added to core. 
+* SDOH (Social determinants of health) variables were added to core. Please see the Peds SDOH Variables derivation 012326 Word document for more information on these variables.  
+* If the zip code database was added to the nodes file section, then the variables region_state_ya, region_ya, region_f_ya, region_state_cg and region_state are added to core.  
+* The cluster calculation in peds_pasc_fxn now only uses symptoms that contribute to the LCRI
+
+### Updates to helper_script.R:
+* get_env_list function updated such that now, to retrieve congenital data objects, either “cong” or “congenital” is not accepted for the ‘coh’ parameter
+* mk_vrs_bin  and flip_bin functions added in order to help create SDOH variables. 
+* zip_region_fxn added to create the variables region_state, region and region_f. 
+
+
 ## October 21, 2025
 
 Files updated:
