@@ -25,7 +25,7 @@ if(set_resp == "Likely an internal run"){
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
-bargs <- getArgs(defaults = list(dt = "20250906"))
+bargs <- getArgs(defaults = list(dt = "20251206"))
 
 
 # check for whether qs2 objects already exist in this project's
@@ -78,6 +78,8 @@ repeated_rc_forms <- unique(read_csv(file.path(data_loc, repeat_forms_path)) %>%
 
 repeat_forms_path_cg <- list.files(data_loc_cg, pattern="RECOVER.*_repeatforms_.*.csv") 
 repeated_rc_forms_cg <- unique(read_csv(file.path(data_loc_cg, repeat_forms_path_cg)) %>% pull(form_name))
+
+zip_code_db_dir <- glue("{pf_loc}/zip_code_database.csv")
 
 
 # YA variable fix 
@@ -267,6 +269,10 @@ core_base_cg <- reduce(single_instance_form_datasets_cg, \(df1, df2) left_join(d
             by = join_by(record_id)) %>%
   left_join(formds_cg_list$demographics %>%
               select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)),
+            by = join_by(record_id)) %>%
+  left_join(formds_cg_list$identity %>%
+              filter(redcap_event_name %in% c("baseline_arm_2", "baseline_arm_3")) %>%
+              select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)), 
             by = join_by(record_id))
 
 # add additional variables to core
@@ -307,9 +313,14 @@ core_cg <- core_base_cg %>%
          cg_race_7WN = tab_factor(pmin(1, (-1 * (demo_cgrace___4 - 1)) * (demo_cgrace___7 + demo_cgrace___5)), "White, Non-Hispanic", race_na_flag),
          cg_race_15N = tab_factor(demo_cgrace___15, "None of these fully describe me", race_na_flag),
          vacc_yn_f = factor(vacc_yn, 0:1, c("Not Vaccinated", "Vaccinated")),
-         demo_cgeduc_f = factor(demo_cgeduc, c(1:8), c(rep("Less than college education attainment", 6), rep("College or more", 2))))
+         demo_cgeduc_f = factor(demo_cgeduc, c(1:8), c(rep("Less than college education attainment", 6), rep("College or more", 2))),
+         addr_zip5 = substr(addr_zip, 1, 5)) 
 
-
+# if zip_code_database exists in project-files, add these variables to core_cg. otherwise, core_cg remains the same. 
+if (file.exists(zip_code_db_dir)) {
+  core_cg <- core_cg %>%
+    zip_region_fxn("addr_zip5", zip_code_db_dir)
+}
 
 # --------
 
@@ -357,15 +368,6 @@ study_grp_levs <- c(
   U = "Uninfected"
 )
 
-
-# fcih_dty_query <- formds_list$first_covid_infection_history %>% 
-#   select(record_id, redcap_event_name, fcih_dty) %>%
-#   filter(nchar(fcih_dty) != 4) %>% 
-#   mutate(query_valtxt = paste0("value: ", fcih_dty, ", 4 characters allowed"),
-#          query = "fcih_dty must be only 4 characters long representing year",
-#          variable = "fcih_dty",
-#          form = "first_covid_infection_history") %>%
-#   select(-c(fcih_dty))
 
 # antibody work
 most_recent_ab <- formds_list$antibody_test_results %>% 
@@ -499,7 +501,381 @@ core_base <- reduce(single_instance_form_datasets, \(df1, df2) left_join(df1, df
             by = "record_id") %>%
   left_join(formds_list$identity %>%
               select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)),
+            by = "record_id") %>%
+  left_join(formds_list$child_social_determinants_of_health %>%
+              filter(redcap_event_name %in% c("baseline_arm_4", "week_8_arm_2")) %>%
+              select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)),
             by = "record_id")
+
+### Including SDOH variables used in SDOH paper for nodes
+sdoh_vrs <- c("food_secure","sdoh_homeless_bin", "sdoh_transport_bin", "sdoh_childcare_bin",
+              "sdoh_moneyshort_bin","sdoh_anyfinancial","sdoh_snapwic",
+              "sdoh_marital_both_bin", "sdoh_overcrowding",
+              "ocs_scale_bin", "phq_8cat_sev",
+              "gad_7cat_sev", "pss_score_f", 
+              "dsm5_ang","dsm5_pers", "dsm5_composite",
+              "discrim_score","discrim_medical_bin","social_support",
+              "neighcc_score_bin", "neigh_dis", 
+              "sdoh_insurance_bin", "sdoh_insurance_cg_bin","sdoh_lymedcare_bin",
+              "health_util","health_literacy", "demo_cgeduc_bin")
+
+# creation of sdoh_vr_df 
+
+sdoh_var_df <- core_base %>% 
+  mutate(enrl_cgid2=toupper(enrl_cgid),
+         across(all_of(c("sdoh_worryfood","sdoh_lackfood", "sdoh_balancedmeals","sdoh_cutmealsfreq","sdoh_noteatfreq",
+                         "sdoh_moneyshort","sdoh_neighclean","sdoh_neighhouses","sdoh_neighyard")), \(x) mk_vrs_bin(vr=x, yes_vals=c(1:2), na_vals=c(-1, -88)), .names="{.col}_bin"),
+         across(all_of(c("sdoh_neighgraf","sdoh_neighnoise",
+                         "sdoh_neighvandal","sdoh_neighabandon",
+                         "sdoh_neighcrime")), \(x) mk_vrs_bin(vr=x, yes_vals=c(4:5), na_vals=c(-1, -88)), .names="{.col}_bin"),
+         across(all_of(c("sdoh_cutmeals", "sdoh_eatless", "sdoh_hungry","sdoh_loseweight","sdoh_noteat", 
+                         "sdoh_homeless")), \(x) mk_vrs_bin(vr=x, yes_vals=1, na_vals=c(-1, -88)), .names="{.col}_bin"),
+         across(all_of(c("sdoh_transport", "sdoh_childcare")), \(x) mk_vrs_bin(vr=x, yes_vals=c(2:3), na_vals=NULL), .names = "{.col}_bin"),
+         across(all_of(c("sdoh_finassunemployment", "sdoh_finasssnap", "sdoh_finasstanf",
+                         "sdoh_finasswic","sdoh_finassss","sdoh_finasssuppss","sdoh_finassgovhi",
+                         "sdoh_finassppp","sdoh_finassgovoth")), \(x) mk_vrs_bin(vr=x, yes_vals=c(1:3),  na_vals=NULL), .names = "{.col}_bin"),
+         across("sdoh_income", \(x) peds_afmts$sdoh_income(x), .names="{.col}_f"),
+         inc_min=parse_number(gsub(" .*", "", sdoh_income_f)),
+         inc_max=ifelse(grepl("and above", sdoh_income_f), NA, parse_number(gsub(".*\\d+\\s+", "", sdoh_income_f))),
+         hh_sizeya=ifelse(!is.na(sdoh_housesizeadult)|!is.na(sdoh_housesizechild), 
+                          rowSums(across(c("sdoh_housesizeadult","sdoh_housesizechild")), na.rm=T),
+                          NA),
+         food_secure_sum=rowSums(across(c("sdoh_worryfood_bin","sdoh_lackfood_bin", "sdoh_balancedmeals_bin", "sdoh_cutmeals_bin", "sdoh_cutmealsfreq_bin",
+                                          "sdoh_eatless_bin", "sdoh_hungry_bin","sdoh_loseweight_bin","sdoh_noteat_bin", "sdoh_noteatfreq_bin")),
+                                 na.rm=T),
+         food_secureya=case_when(food_secure_sum >=3~1,
+                                 rowSums(across(c("sdoh_worryfood_bin","sdoh_lackfood_bin",
+                                                  "sdoh_balancedmeals_bin", "sdoh_cutmeals_bin",
+                                                  "sdoh_eatless_bin", "sdoh_hungry_bin",
+                                                  "sdoh_loseweight_bin","sdoh_noteat_bin"))) <3~0,
+                                 T~NA),
+         sdoh_overcrowdingya=ifelse(hh_sizeya/sdoh_rooms>1.5, 1,0), 
+         across(all_of(c("sdoh_read","sdoh_writprobs")), \(x) case_when(x %in% 1~5,
+                                                                        x %in% 2~4,
+                                                                        x %in% 3~3,
+                                                                        x %in% 4~2,
+                                                                        x %in% 5~1), .names = "{.col}_re"),
+         health_literacy_sum=rowSums(across(c("sdoh_read_re","sdoh_writprobs_re","sdoh_formconf")), na.rm=T),
+         health_literacy=case_when(health_literacy_sum>=9~1, 
+                                   rowSums(across(c("sdoh_read_re","sdoh_writprobs_re","sdoh_formconf"))) <9~0,
+                                   T~NA),
+         sdoh_homeless_binya=sdoh_homeless_bin,
+         sdoh_transport_binya=sdoh_transport_bin,
+         sdoh_childcare_binya=sdoh_childcare_bin,
+         sdoh_moneyshort_binya=sdoh_moneyshort_bin,
+         sdoh_anyfinancial_sum_narm=rowSums(across(c("sdoh_finasstanf_bin","sdoh_finassss_bin",
+                                                     "sdoh_finasssuppss_bin","sdoh_finassppp_bin",
+                                                     "sdoh_finassgovoth_bin", "sdoh_finassunemployment_bin")), na.rm=T),
+         sdoh_anyfinancialya=case_when(sdoh_anyfinancial_sum_narm>=1~1,
+                                       rowSums(across(c("sdoh_finasstanf_bin","sdoh_finassss_bin",
+                                                        "sdoh_finasssuppss_bin","sdoh_finassppp_bin",
+                                                        "sdoh_finassgovoth_bin", "sdoh_finassunemployment_bin")))==0~0,
+                                       T~NA),
+         sdoh_snapwic_sum_narm=rowSums(across(c("sdoh_finasssnap_bin", "sdoh_finasswic_bin")), na.rm=T),
+         sdoh_snapwicya=case_when(sdoh_snapwic_sum_narm>=1~1,
+                                  rowSums(across(c("sdoh_finasssnap_bin", "sdoh_finasswic_bin")))==0~0,
+                                  T~NA),
+         across(all_of(c("sdoh_fmcwarm")), \(x) case_when(x==1~2,
+                                                          x==2~1,
+                                                          x==3~3), .names="{.col}_re"),
+         
+         across(all_of(c("sdoh_fmcwarm_re",
+                         "sdoh_fmcbully","sdoh_fmcviolence","sdoh_fmcjail",
+                         "sdoh_fmcdepress","sdoh_fmcdrugs","sdoh_fmcdivorce")),
+                \(x) mk_vrs_bin(vr=x, yes_vals=c(1), na_vals=3), .names = "{.col}_bin"),
+         ocs_scale=rowSums(across(c("sdoh_fmcwarm_re_bin",
+                                    "sdoh_fmcbully_bin","sdoh_fmcviolence_bin","sdoh_fmcjail_bin",
+                                    "sdoh_fmcdepress_bin","sdoh_fmcdrugs_bin","sdoh_fmcdivorce_bin",
+                                    "sdoh_worryfood_bin")), na.rm=T),
+         ocs_scale_bin=case_when(ocs_scale >3~"4+",
+                                 rowSums(across(c("sdoh_fmcwarm_re_bin",
+                                                  "sdoh_fmcbully_bin","sdoh_fmcviolence_bin","sdoh_fmcjail_bin",
+                                                  "sdoh_fmcdepress_bin","sdoh_fmcdrugs_bin","sdoh_fmcdivorce_bin",
+                                                  "sdoh_worryfood_bin")))<=3~"0-3",
+                                 T~NA),
+         across(all_of(c("discrim_courtesy","discrim_respect",
+                         "discrim_service","discrim_smart",
+                         "discrim_afraid","discrim_dishonest",
+                         "discrim_better","discrim_insult",
+                         "discrim_threat","discrim_medical")), \(x) case_when(x==6~0,
+                                                                              x==5~1,
+                                                                              x==4~2,
+                                                                              x==3~3,
+                                                                              x==2~4,
+                                                                              x==1~5), .names = "{.col}_re"),
+         discrim_score_sum=rowSums(across(c("discrim_courtesy_re","discrim_respect_re",
+                                            "discrim_service_re","discrim_smart_re",
+                                            "discrim_afraid_re","discrim_dishonest_re",
+                                            "discrim_better_re","discrim_insult_re",
+                                            "discrim_threat_re")), na.rm=T),
+         discrim_score=case_when(discrim_score_sum>=6~1,
+                                 rowSums(across(c("discrim_courtesy_re","discrim_respect_re",
+                                                  "discrim_service_re","discrim_smart_re",
+                                                  "discrim_afraid_re","discrim_dishonest_re",
+                                                  "discrim_better_re","discrim_insult_re",
+                                                  "discrim_threat_re")))<5~0,
+                                 T~NA),
+         across("discrim_medical", \(x) mk_vrs_bin(vr=x, yes_vals = c(1:4), na_vals=NULL),  .names = "{.col}_bin"),
+         across(all_of(c("pss_04","pss_05",
+                         "pss_07","pss_08")), \(x) case_when(x==4~0,
+                                                             x==3~1,
+                                                             x==2~2,
+                                                             x==1~3,
+                                                             x==0~4), .names="{.col}_re"),
+         pss_score=rowSums(across(c("pss_01","pss_02","pss_03","pss_04_re",
+                                    "pss_05_re","pss_06", "pss_07_re","pss_08_re",
+                                    "pss_09","pss_10")), na.rm=T),
+         pss_score_na=rowSums(across(c("pss_01","pss_02","pss_03","pss_04_re",
+                                       "pss_05_re","pss_06", "pss_07_re","pss_08_re",
+                                       "pss_09","pss_10"))),
+         pss_score_fya=factor(case_when(pss_score_na>=0 & pss_score_na <14~"Low stress",
+                                        pss_score<41~"Moderate or high perceived stress", 
+                                        T~NA),
+                              levels=c("Low stress","Moderate or high perceived stress")),
+         across(all_of(c("sdohcc_neighborshelp",
+                         "sdohcc_counton","sdohcc_trusted",
+                         "sdohcc_closeknit")), \(x) case_when(x==1~4,
+                                                              x==2~3,
+                                                              x==3~2,
+                                                              x==4~1), .names="rev_{col}"),
+         neighcc_score=rowSums(across(c("rev_sdohcc_neighborshelp",
+                                        "rev_sdohcc_counton","rev_sdohcc_trusted",
+                                        "rev_sdohcc_closeknit")), na.rm=T),
+         med_cc=12,
+         neighcc_score_binya= case_when(neighcc_score>= med_cc~"Higher than median cohesion",
+                                        rowSums(across(c("rev_sdohcc_neighborshelp",
+                                                         "rev_sdohcc_counton","rev_sdohcc_trusted",
+                                                         "rev_sdohcc_closeknit"))) < med_cc~"Lower than median cohesion",
+                                        T~NA),
+         neigh_dis_sum=rowSums(across(all_of(c("sdoh_neighgraf_bin",
+                                               "sdoh_neighnoise_bin","sdoh_neighvandal_bin","sdoh_neighabandon_bin",
+                                               "sdoh_neighclean_bin","sdoh_neighhouses_bin","sdoh_neighyard_bin",
+                                               "sdoh_neighcrime_bin"))), na.rm=T),
+         neigh_disya=case_when(neigh_dis_sum >=1~1,
+                               rowSums(across(all_of(c("sdoh_neighgraf_bin",
+                                                       "sdoh_neighnoise_bin","sdoh_neighvandal_bin","sdoh_neighabandon_bin",
+                                                       "sdoh_neighclean_bin","sdoh_neighhouses_bin","sdoh_neighyard_bin",
+                                                       "sdoh_neighcrime_bin"))))==0~0,
+                               T~NA),
+         sdoh_insurance_sum=rowSums(across(c("sdoh_insurance___1","sdoh_insurance___2","sdoh_insurance___7",
+                                             "sdoh_insurance___4","sdoh_insurance___8","sdoh_insurance___99", 
+                                             "sdoh_insurance___5","sdoh_insurance____88", "sdoh_insurance___98")),
+                                    na.rm=T),
+         sdoh_insurance_bin=case_when(sdoh_insurance___1==1|sdoh_insurance___2==1~1,
+                                      sdoh_insurance_sum==1 & (sdoh_insurance___98==1|sdoh_insurance____88==1)~NA,
+                                      sdoh_insurance_sum==2 & (sdoh_insurance___98==1 & sdoh_insurance____88==1)~NA,
+                                      T~0),
+         across(all_of(c("sdoh_insurance_bin")), \(x) flip_bin(x)),
+         sdoh_lymedcare_bin=flip_bin(sdoh_lymedcare),
+         across(all_of(c("sdoh_visitsable","sdoh_medsupp","sdoh_reachdoc")),\(x) mk_vrs_bin(vr=x, yes_vals=c(1:3), na_vals=NULL), .names = "{.col}_bin"),
+         health_util_sum=rowSums(across(c("sdoh_visitsable_bin","sdoh_medsupp_bin","sdoh_reachdoc_bin")), na.rm=T),
+         health_util=case_when(health_util_sum>=1~1,
+                               rowSums(across(c("sdoh_visitsable_bin","sdoh_medsupp_bin","sdoh_reachdoc_bin")))<1~0,
+                               T~NA),
+         across(all_of(c("sdoh_read","sdoh_writprobs")), \(x) case_when(x %in% 1~5,
+                                                                        x %in% 2~4,
+                                                                        x %in% 3~3,
+                                                                        x %in% 4~2,
+                                                                        x %in% 5~1), .names = "{.col}_re"),
+         health_literacy_sum=rowSums(across(c("sdoh_read_re","sdoh_writprobs_re","sdoh_formconf")), na.rm=T),
+         health_literacyya=case_when(health_literacy_sum>=9~1, 
+                                     rowSums(across(c("sdoh_read_re","sdoh_writprobs_re","sdoh_formconf"))) <9~0,
+                                     T~NA),
+         sdoh_maritalp=ifelse(is.na(sdoh_maritalp), sdoh_maritalya, sdoh_maritalp)) %>% 
+  select(record_id, hh_sizeya, starts_with(paste(sdoh_vrs, sep = "|")), sdoh_maritalp, enrl_cgid2) %>% 
+  left_join(core_cg %>% 
+              left_join(formds_cg_list$caregiver_wellbeing %>% 
+                          filter(redcap_event_name %in% "baseline_arm_3") %>% 
+                          select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)), by="record_id") %>% 
+              left_join(formds_cg_list$caregiver_social_determinants_of_health %>% 
+                          filter(redcap_event_name %in% "baseline_arm_3") %>% 
+                          select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)), by="record_id") %>% 
+              left_join(formds_cg_list$household_social_determinants_of_health %>%
+                          filter(redcap_event_name %in% c("baseline_arm_2", "baseline_arm_3")) %>%
+                          select(-c(redcap_event_name, redcap_repeat_instrument, redcap_repeat_instance, form)), by = "record_id") %>%
+              mutate(across(all_of(c("sdoh_worryfood","sdoh_lackfood", "sdoh_balancedmeals","sdoh_cutmealsfreq","sdoh_noteatfreq",
+                                     "sdoh_moneyshort","sdoh_neighclean","sdoh_neighhouses","sdoh_neighyard")), \(x) mk_vrs_bin(vr=x, yes_vals=c(1:2), na_vals=c(-1, -88)), .names="{.col}_bin"),
+                     across(all_of(c("sdoh_neighgraf","sdoh_neighnoise",
+                                     "sdoh_neighvandal","sdoh_neighabandon",
+                                     "sdoh_neighcrime")), \(x) mk_vrs_bin(vr=x, yes_vals=c(4:5), na_vals=c(-1, -88)), .names="{.col}_bin"),
+                     across(all_of(c("sdoh_cutmeals", "sdoh_eatless", "sdoh_hungry","sdoh_loseweight","sdoh_noteat", 
+                                     "sdoh_homeless")), \(x) mk_vrs_bin(vr=x, yes_vals=1, na_vals=c(-1, -88)), .names="{.col}_bin"),
+                     
+                     food_secure_sum=rowSums(across(c("sdoh_worryfood_bin","sdoh_lackfood_bin", "sdoh_balancedmeals_bin", "sdoh_cutmeals_bin", "sdoh_cutmealsfreq_bin",
+                                                      "sdoh_eatless_bin", "sdoh_hungry_bin","sdoh_loseweight_bin","sdoh_noteat_bin", "sdoh_noteatfreq_bin")),
+                                             na.rm=T),
+                     food_securecg=case_when(food_secure_sum >=3~1,
+                                             rowSums(across(c("sdoh_worryfood_bin","sdoh_lackfood_bin",
+                                                              "sdoh_balancedmeals_bin", "sdoh_cutmeals_bin",
+                                                              "sdoh_eatless_bin", "sdoh_hungry_bin",
+                                                              "sdoh_loseweight_bin","sdoh_noteat_bin"))) <3~0,
+                                             T~NA),
+                     across(all_of(c("sdoh_transport", "sdoh_childcare")), \(x) mk_vrs_bin(vr=x, yes_vals=c(2:3), na_vals=NULL), .names = "{.col}_bin"),
+                     sdoh_homeless_bincg=sdoh_homeless_bin,
+                     sdoh_transport_bincg=sdoh_transport_bin,
+                     sdoh_childcare_bincg=sdoh_childcare_bin,
+                     sdoh_moneyshort_bincg=sdoh_moneyshort_bin,
+                     across(all_of(c("sdoh_finassunemployment", "sdoh_finasssnap", "sdoh_finasstanf",
+                                     "sdoh_finasswic","sdoh_finassss","sdoh_finasssuppss","sdoh_finassgovhi",
+                                     "sdoh_finassppp","sdoh_finassgovoth")), \(x) mk_vrs_bin(vr=x, yes_vals=c(1:3),  na_vals=NULL), .names = "{.col}_bin"),
+                     sdoh_anyfinancial_sum_narm=rowSums(across(c("sdoh_finasstanf_bin","sdoh_finassss_bin",
+                                                                 "sdoh_finasssuppss_bin","sdoh_finassppp_bin",
+                                                                 "sdoh_finassgovoth_bin", "sdoh_finassunemployment_bin")), na.rm=T),
+                     sdoh_anyfinancialcg=case_when(sdoh_anyfinancial_sum_narm>=1~1,
+                                                   rowSums(across(c("sdoh_finasstanf_bin","sdoh_finassss_bin",
+                                                                    "sdoh_finasssuppss_bin","sdoh_finassppp_bin",
+                                                                    "sdoh_finassgovoth_bin", "sdoh_finassunemployment_bin")))==0~0,
+                                                   T~NA),
+                     sdoh_snapwic_sum_narm=rowSums(across(c("sdoh_finasssnap_bin", "sdoh_finasswic_bin")), na.rm=T),
+                     sdoh_snapwiccg=case_when(sdoh_snapwic_sum_narm>=1~1,
+                                              rowSums(across(c("sdoh_finasssnap_bin", "sdoh_finasswic_bin")))==0~0,
+                                              T~NA),
+                     hh_sizecg=ifelse(!is.na(sdoh_housesizeadult)|!is.na(sdoh_housesizechild), 
+                                      rowSums(across(c("sdoh_housesizeadult","sdoh_housesizechild")), na.rm=T),
+                                      NA),
+                     sdoh_overcrowdingcg=ifelse(hh_sizecg/sdoh_rooms>1.5, 1,0),
+                     phq_8_score=rowSums(across(c("phq_1", "phq_2",
+                                                  "phq_3", "phq_4", "phq_5", "phq_6", 
+                                                  "phq_7", "phq_8"))),
+                     phq_8cat=factor(case_when(phq_8_score<=4~"No or minimal depression",
+                                               phq_8_score<=9~"Mild depression",
+                                               phq_8score >=10 & phq_8score<=27~"Moderate, moderately severe, or severe depression"), 
+                                     levels=c("No or minimal depression",
+                                              "Mild depression","Moderate, moderately severe, or severe depression")),
+                     gad_7_score=rowSums(across(c("gad_1","gad_2",
+                                                  "gad_3","gad_4","gad_5",
+                                                  "gad_6","gad_7"))),
+                     gad_7cat=factor(case_when(gad_7_score>=0 & gad_7_score<=4~"None",
+                                               gad_7_score<=9~"Mild anxiety",
+                                               gad_7score>=10 & gad_7score<=21~"Moderate or severe anxiety"),
+                                     levels=c("None","Mild anxiety",
+                                              "Moderate or severe anxiety")),
+                     phq_8cat_sev = ifelse(is.na(phq_8cat), NA, ifelse(phq_8cat %in% "Moderate, moderately severe, or severe depression", 1, 0)),
+                     gad_7cat_sev = ifelse(is.na(gad_7cat), NA, ifelse(gad_7cat %in% "Moderate or severe anxiety", 1, 0)),
+                     across(all_of(c("pss_04","pss_05",
+                                     "pss_07","pss_08")), \(x) case_when(x==4~0,
+                                                                         x==3~1,
+                                                                         x==2~2,
+                                                                         x==1~3,
+                                                                         x==0~4), .names="{.col}_re"),
+                     pss_score=rowSums(across(c("pss_01","pss_02","pss_03","pss_04_re",
+                                                "pss_05_re","pss_06", "pss_07_re","pss_08_re",
+                                                "pss_09","pss_10")), na.rm=T),
+                     pss_score_na=rowSums(across(c("pss_01","pss_02","pss_03","pss_04_re",
+                                                   "pss_05_re","pss_06", "pss_07_re","pss_08_re",
+                                                   "pss_09","pss_10"))),
+                     pss_score_fcg=factor(case_when(pss_score_na>=0 & pss_score_na <14~"Low stress",
+                                                    pss_score<41~"Moderate or high perceived stress", 
+                                                    T~NA),
+                                          levels=c("Low stress","Moderate or high perceived stress")),
+                     dms5_mania=case_when(dsm5crossad_4>=2~"Meets Threshold",
+                                          dsm5crossad_5>=2~"Meets Threshold",
+                                          dsm5crossad_4<2~"Below Threshold",
+                                          dsm5crossad_5<2~"Below Threshold"),
+                     dsm5_sui=case_when(dsm5crossad_11>=1~"Meets Threshold",
+                                        dsm5crossad_11<1~"Below Threshold"),
+                     dsm5_psych=case_when(dsm5crossad_12>=1~"Meets Threshold",
+                                          dsm5crossad_13>=1~"Meets Threshold",
+                                          dsm5crossad_12<1~"Below Threshold",
+                                          dsm5crossad_13<1~"Below Threshold"),
+                     dsm5_rep=case_when(dsm5crossad_16>=2~"Meets Threshold",
+                                        dsm5crossad_17>=2~"Meets Threshold",
+                                        dsm5crossad_16<2~"Below Threshold",
+                                        dsm5crossad_17<2~"Below Threshold"),
+                     dsm5_diss=case_when(dsm5crossad_18>=2~"Meets Threshold",
+                                         dsm5crossad_18<2~"Below Threshold"),
+                     dsm5_ang=case_when(dsm5crossad_3>=2~"Meets Threshold",
+                                        dsm5crossad_3<2~"Below Threshold"),
+                     dsm5_pers=case_when(dsm5crossad_19>=2~"Meets Threshold",
+                                         dsm5crossad_20>=2~"Meets Threshold",
+                                         dsm5crossad_19<2~"Below Threshold",
+                                         dsm5crossad_20<2~"Below Threshold"),
+                     dsm5_composite = ifelse(is.na(dms5_mania) & is.na(dsm5_sui) & is.na(dsm5_psych) & is.na(dsm5_rep) & is.na(dsm5_diss), NA,
+                                             ifelse(dms5_mania %in% "Meets Threshold" | dsm5_sui %in% "Meets Threshold" | dsm5_psych %in% "Meets Threshold" |
+                                                      dsm5_rep %in% "Meets Threshold" | dsm5_diss %in% "Meets Threshold", 1, 0)),
+                     social_support_sum=rowSums(across(c("sdohss_bed",
+                                                         "sdohss_doctor","sdohss_meals",
+                                                         "sdohss_chores","sdohss_goodtime",
+                                                         "sdohss_suggestions","sdohss_understand",
+                                                         "sdohss_lovewant")), na.rm=T),
+                     social_support=case_when(
+                       rowSums(across(c("sdohss_bed",
+                                        "sdohss_doctor","sdohss_meals",
+                                        "sdohss_chores","sdohss_goodtime",
+                                        "sdohss_suggestions","sdohss_understand",
+                                        "sdohss_lovewant")))>29~0,
+                       social_support_sum<=29~1,
+                       T~NA),
+                     across(all_of(c("sdohcc_neighborshelp",
+                                     "sdohcc_counton","sdohcc_trusted",
+                                     "sdohcc_closeknit")), \(x) case_when(x==1~4,
+                                                                          x==2~3,
+                                                                          x==3~2,
+                                                                          x==4~1), .names="rev_{col}"),
+                     neighcc_score=rowSums(across(c("rev_sdohcc_neighborshelp",
+                                                    "rev_sdohcc_counton","rev_sdohcc_trusted",
+                                                    "rev_sdohcc_closeknit")), na.rm=T),
+                     med_cc=12,
+                     neighcc_score_bincg= case_when(neighcc_score>= med_cc~"Higher than median cohesion",
+                                                    rowSums(across(c("rev_sdohcc_neighborshelp",
+                                                                     "rev_sdohcc_counton","rev_sdohcc_trusted",
+                                                                     "rev_sdohcc_closeknit"))) < med_cc~"Lower than median cohesion",
+                                                    T~NA),
+                     neigh_dis_sum=rowSums(across(all_of(c("sdoh_neighgraf_bin",
+                                                           "sdoh_neighnoise_bin","sdoh_neighvandal_bin","sdoh_neighabandon_bin",
+                                                           "sdoh_neighclean_bin","sdoh_neighhouses_bin","sdoh_neighyard_bin",
+                                                           "sdoh_neighcrime_bin"))), na.rm=T),
+                     neigh_discg=case_when(neigh_dis_sum >=1~1,
+                                           rowSums(across(all_of(c("sdoh_neighgraf_bin",
+                                                                   "sdoh_neighnoise_bin","sdoh_neighvandal_bin","sdoh_neighabandon_bin",
+                                                                   "sdoh_neighclean_bin","sdoh_neighhouses_bin","sdoh_neighyard_bin",
+                                                                   "sdoh_neighcrime_bin"))))==0~0,
+                                           T~NA),
+                     sdoh_insurance_cg_sum=rowSums(across(c("sdoh_insurance___1","sdoh_insurance___2","sdoh_insurance___7",
+                                                            "sdoh_insurance___4","sdoh_insurance___8","sdoh_insurance___99", 
+                                                            "sdoh_insurance___5","sdoh_insurance____1","sdoh_insurance____88")),
+                                                   na.rm=T),
+                     sdoh_insurance_cg_bin=case_when(sdoh_insurance___1==1|sdoh_insurance___2==1~1,
+                                                     sdoh_insurance_cg_sum==1 & (sdoh_insurance____1==1|sdoh_insurance____88==1)~NA,
+                                                     sdoh_insurance_cg_sum==2 & (sdoh_insurance____1==1 & sdoh_insurance____88==1)~NA,
+                                                     T~0),
+                     across(
+                       "sdoh_insurance_cg_bin", \(x) flip_bin(x)),
+                     across(all_of(c("sdoh_read","sdoh_writprobs")), \(x) case_when(x %in% 1~5,
+                                                                                    x %in% 2~4,
+                                                                                    x %in% 3~3,
+                                                                                    x %in% 4~2,
+                                                                                    x %in% 5~1), .names = "{.col}_re"),
+                     health_literacy_sum=rowSums(across(c("sdoh_read_re","sdoh_writprobs_re","sdoh_formconf")), na.rm=T),
+                     health_literacycg=case_when(health_literacy_sum>=9~1, 
+                                                 rowSums(across(c("sdoh_read_re","sdoh_writprobs_re","sdoh_formconf"))) <9~0,
+                                                 T~NA),
+                     across("demo_cgeduc", \(x) mk_vrs_bin(vr=x, yes_vals=c(1:6), na_vals=c(-1,-88)), .names= "{.col}_bin")
+                     
+                     
+                     
+              ) %>% 
+              select(enrl_cgid2=record_id, sdoh_marital,hh_sizecg,starts_with(paste(sdoh_vrs, sep = "|"))), 
+            by="enrl_cgid2") %>% 
+  mutate(
+    sdoh_marital_both=ifelse(is.na(sdoh_marital), sdoh_maritalp, sdoh_marital),
+    across("sdoh_marital_both", \(x) mk_vrs_bin(vr=x, yes_vals=c(1,6), na_vals=-88), .names = "{.col}_bin"),
+    across(all_of(c(
+      "sdoh_marital_both_bin")), \(x) flip_bin(x)),
+    hh_size=coalesce(hh_sizeya, hh_sizecg),
+    food_secure=coalesce(food_secureya, food_securecg),
+    sdoh_homeless_bin=coalesce(sdoh_homeless_binya, sdoh_homeless_bincg),
+    sdoh_transport_bin=coalesce(sdoh_transport_binya, sdoh_transport_bincg),
+    sdoh_childcare_bin=coalesce(sdoh_childcare_binya, sdoh_childcare_bincg),
+    sdoh_moneyshort_bin=coalesce(sdoh_moneyshort_binya, sdoh_moneyshort_bincg),
+    sdoh_anyfinancial=coalesce(sdoh_anyfinancialya, sdoh_anyfinancialcg),
+    sdoh_snapwic=coalesce(sdoh_snapwicya, sdoh_snapwiccg),
+    sdoh_overcrowding=coalesce(sdoh_overcrowdingya, sdoh_overcrowdingcg),
+    pss_score_f=coalesce(pss_score_fya, pss_score_fcg),
+    neighcc_score_bin=coalesce(neighcc_score_binya, neighcc_score_bincg),
+    neigh_dis=coalesce(neigh_disya, neigh_discg),
+    health_literacy=coalesce(health_literacyya, health_literacycg)) %>% 
+  select(record_id, hh_size, all_of(sdoh_vrs))
 
 # add additional variables to core
 core <- core_base %>%
@@ -698,7 +1074,58 @@ core <- core_base %>%
                                          t1_symp_form_comp & ptf_category %in% c("Post-acute infected, high (not recruited from long COVID clinic)", 
                                                                                  "Recruited from long COVID clinic")~1,
                                          t1_symp_form_comp & ptf_acute==1~1),
-         promotion_weights=1/promotion_probability)
+         promotion_weights=1/promotion_probability,
+         addr_zipya5 = substr(addr_zipya, 1, 5)) %>%
+  left_join(sdoh_var_df, by="record_id") 
+
+if (file.exists(zip_code_db_dir)) {
+  core <- core %>%
+    zip_region_fxn("addr_zipya5", zip_code_db_dir, vr_ext="_ya") %>%
+    left_join(core_cg %>% 
+                select(enrl_cgid = record_id, 
+                       region_state_cg = region_state), 
+              by = "enrl_cgid") %>% 
+    mutate(region_state=coalesce(region_state_ya, region_state_cg),
+           across("sdoh_income", \(x) peds_afmts$sdoh_income(x), .names="{.col}_f"),
+           inc_min=parse_number(gsub(" .*", "", sdoh_income_f)),
+           inc_max=ifelse(grepl("and above", sdoh_income_f), NA, parse_number(gsub(".*\\d+\\s+", "", sdoh_income_f))),
+           fpl_120=case_when(hh_size==1 & region_state %!in% c("HI", "AK")~1.2*15060,
+                             hh_size==2 & region_state %!in% c("HI", "AK")~1.2*20440,
+                             hh_size==3 & region_state %!in% c("HI", "AK")~1.2*25820,
+                             hh_size==4 & region_state %!in% c("HI", "AK")~1.2*31200,
+                             hh_size==5 & region_state %!in% c("HI", "AK")~1.2*36580,
+                             hh_size==6 & region_state %!in% c("HI", "AK")~1.2*41960,
+                             hh_size==7 & region_state %!in% c("HI", "AK")~1.2*47340,
+                             hh_size==8 & region_state %!in% c("HI", "AK")~1.2*52720,
+                             hh_size>8 & region_state %!in% c("HI", "AK")~1.2*(52720+((hh_size-8)*5380)),
+                             
+                             hh_size==1 & region_state %in% ("AK")~1.2*18810,
+                             hh_size==2 & region_state %in% ("AK")~1.2*25540,
+                             hh_size==3 & region_state %in% ("AK")~1.2*32270,
+                             hh_size==4 & region_state %in% ("AK")~1.2*39000,
+                             hh_size==5 & region_state %in% ("AK")~1.2*45730,
+                             hh_size==6 & region_state %in% ("AK")~1.2*52460,
+                             hh_size==7 & region_state %in% ("AK")~1.2*59190,
+                             hh_size==8 & region_state %in% ("AK")~1.2*65920,
+                             hh_size>8 & region_state %in% ("AK")~1.2*(65920+((hh_size-8)*6730)),
+                             
+                             hh_size==1 & region_state %in% ("HI")~1.2*17130,
+                             hh_size==2 & region_state %in% ("HI")~1.2*23500,
+                             hh_size==3 & region_state %in% ("HI")~1.2*29690,
+                             hh_size==4 & region_state %in% ("HI")~1.2*35880,
+                             hh_size==5 & region_state %in% ("HI")~1.2*42070,
+                             hh_size==6 & region_state %in% ("HI")~1.2*48260,
+                             hh_size==7 & region_state %in% ("HI")~1.2*54450,
+                             hh_size==8 & region_state %in% ("HI")~1.2*60640,
+                             hh_size>8 & region_state %in% ("HI")~1.2*(60640+((hh_size-8)*6190))),
+           sdoh_fpl120=case_when(inc_min > fpl_120~"Not below 120% FPL",
+                                 !is.na(inc_max) & inc_max <= fpl_120~"Below 120% FPL or income within range",
+                                 inc_min <= fpl_120 & !is.na(inc_max) 
+                                 & inc_max >= fpl_120 ~"Below 120% FPL or income within range",
+                                 inc_min <= fpl_120 & is.na(inc_max)~"Below 120% FPL or income within range"))
+}
+
+
 
 # Labs datasets creation
 
@@ -1024,160 +1451,157 @@ peds_core_symps <- ds_dd %>%
 #### to a certain age group ONLY IF everyone in the object ds is not presented this question. When dealing with people who are from all 
 #### different age strata, this filtering may not work, and special care should be used when interpreting results in a dataset with 
 #### all different age groups.
-mk_ps_symp_df <- function(ds, core_ds = core, form_cs = formds_list$covid_symptoms, form_vis=formds_list$visit_form, pcs = peds_core_symps, symp_vr = "lasso_symps", dd){
+mk_ps_symp_df <- function(ds,    core_ds = core,    form_cs = formds_list$covid_symptoms,    form_vis=formds_list$visit_form,    pcs = peds_core_symps,    symp_vr = "lasso_symps",    dd){
   all_names_cs <- names(form_cs)
   first_name_cs = which(all_names_cs == "ps_colldt")
   last_name_cs = which(all_names_cs == "covid_symptoms_complete") - 1
   if(missing(dd)){
-    ignore_vrs <- c("ps_coord___1", "ps_colllang", "ps_mens", 
-                    "ps_stext_2_4_wk", "ps_stext_2_4_wk_es", "ps_stext_8_wk", 
+    ignore_vrs <- c("ps_coord___1",    "ps_colllang",    "ps_mens",    
+                    "ps_stext_2_4_wk",    "ps_stext_2_4_wk_es",    "ps_stext_8_wk",    
                     "ps_stext_8_wk_es")
   } else {
     ignore_vrs <- dd %>% 
-      filter(vr.name %in% all_names_cs,
-             field.type == "calc" | grepl("@CALCTEXT", field.annotation)) %>% 
+      filter(vr.name %in% all_names_cs,   
+             field.type == "calc" | grepl("@CALCTEXT",    field.annotation)) %>% 
       pull(vr.name)
   }
   
   
   
-  all_data_cs <- setdiff(all_names_cs[first_name_cs:last_name_cs], ignore_vrs)
+  all_data_cs <- setdiff(all_names_cs[first_name_cs:last_name_cs],    ignore_vrs)
   
   # Implementing this may help choosing between missed vs. no pasc. Used in mkrenv to produce ds
   
   # started_ps = form_cs %>% 
-  #   select(record_id, redcap_event_name, all_of(all_data_cs)) %>% 
-  #   mutate(across(everything(), as.character)) %>% 
+  #   select(record_id,    redcap_event_name,    all_of(all_data_cs)) %>% 
+  #   mutate(across(everything(),    as.character)) %>% 
   #   pivot_longer(cols=all_of(all_data_cs)) %>% 
-  #   mutate(ms_flag = grepl("___", name)) %>% 
-  #   summarise(n_entered = sum((ms_flag & value %in% 1) | (!ms_flag & !is.na(value))),
-  #             .by=c(record_id, redcap_event_name))
+  #   mutate(ms_flag = grepl("___",    name)) %>% 
+  #   summarise(n_entered = sum((ms_flag & value %in% 1) | (!ms_flag & !is.na(value))),   
+  #             .by=c(record_id,    redcap_event_name))
   #   
   
   visit_ds <- ds %>% 
-    left_join(core_ds %>% select(record_id, arm_num, infect_yn_f, study_grp,biosex_f, enrl_dob), by="record_id") %>% 
+    left_join(core_ds %>% select(record_id,    arm_num,    infect_yn_f,    study_grp,   biosex_f,    enrl_dob),    by="record_id") %>% 
     left_join(form_cs %>% 
-                select(record_id, redcap_event_name, ps_colldt, ps_mens, ps_infected,all_of(pcs$vr.name)) %>% 
-                mutate(across(contains("musicul"), \(x) case_when(x == "No" ~ 0,
-                                                                  grepl("^Yes.*no longer.*$", x) ~ 6,
-                                                                  grepl("^Yes.*still.*$", x) ~ 7))), 
-              by = c("record_id", "redcap_event_name")) %>% 
-    left_join(form_vis %>% select(record_id, redcap_event_name, visit_age),
-              by = c("record_id", "redcap_event_name")) %>% 
-    mutate(infect_yn = ifelse(infect_yn_f == "Infected", 1, 0), 
-           visit_age = case_when(is.na(visit_age)~time_length(difftime(ps_colldt, enrl_dob), "years"),
-                                 T ~ visit_age),
-           age_strata = factor(case_when(visit_age >= 0 & visit_age < 3 ~ "Ages 0 - 2 (Infant)",
-                                         visit_age >= 3 & visit_age < 6 ~ "Ages 3 - 5 (Preschoolers)",
-                                         visit_age >= 6 & visit_age < 12 ~ "Ages 6 - 11 (Middle Childhood)",
-                                         visit_age >= 12 & visit_age < 18 ~ "Ages 12 - 17 (Adolescence)",
-                                         visit_age >= 18 ~ "Ages 18+ (Young Adult)"), 
-                               levels = c("Ages 0 - 2 (Infant)","Ages 3 - 5 (Preschoolers)", "Ages 6 - 11 (Middle Childhood)","Ages 12 - 17 (Adolescence)","Ages 18+ (Young Adult)"), 
+                select(record_id,    redcap_event_name,    ps_colldt,    ps_mens,    ps_infected,   all_of(pcs$vr.name)) %>% 
+                mutate(across(contains("musicul"),    \(x) case_when(x == "No" ~ 0,   
+                                                                     grepl("^Yes.*no longer.*$",    x) ~ 6,   
+                                                                     grepl("^Yes.*still.*$",    x) ~ 7))),    
+              by = c("record_id",    "redcap_event_name")) %>% 
+    left_join(form_vis %>% select(record_id,    redcap_event_name,    visit_age),   
+              by = c("record_id",    "redcap_event_name")) %>% 
+    mutate(infect_yn = ifelse(infect_yn_f == "Infected",    1,    0),    
+           visit_age = case_when(is.na(visit_age)~time_length(difftime(ps_colldt,    enrl_dob),    "years"),   
+                                 T ~ visit_age),   
+           age_strata = factor(case_when(visit_age >= 0 & visit_age < 3 ~ "Ages 0 - 2 (Infant)",   
+                                         visit_age >= 3 & visit_age < 6 ~ "Ages 3 - 5 (Preschoolers)",   
+                                         visit_age >= 6 & visit_age < 12 ~ "Ages 6 - 11 (Middle Childhood)",   
+                                         visit_age >= 12 & visit_age < 18 ~ "Ages 12 - 17 (Adolescence)",   
+                                         visit_age >= 18 ~ "Ages 18+ (Young Adult)"),    
+                               levels = c("Ages 0 - 2 (Infant)",   "Ages 3 - 5 (Preschoolers)",    "Ages 6 - 11 (Middle Childhood)",   "Ages 12 - 17 (Adolescence)",   "Ages 18+ (Young Adult)"),    
                                ordered = T))
   
   
   ds_base0 <- visit_ds %>% 
-    pivot_longer(!c(record_id, arm_num,enrl_dob, visit_age, age_strata,
-                    infect_yn_f, infect_yn, study_grp, biosex_f,
-                    redcap_event_name, ps_colldt, ps_mens, ps_infected),
-                 names_sep = "_",
-                 names_to = c("fm", "symptom", "vr_tm"),
+    pivot_longer(!c(record_id,    arm_num,   enrl_dob,    visit_age,    age_strata,   
+                    infect_yn_f,    infect_yn,    study_grp,    biosex_f,   
+                    redcap_event_name,    ps_colldt,    ps_mens,    ps_infected),   
+                 names_sep = "_",   
+                 names_to = c("fm",    "symptom",    "vr_tm"),   
                  values_to = "value") %>% 
-    mutate(variable=paste(fm, symptom, vr_tm, sep="_")) %>% 
-    left_join(pcs %>% select(variable = vr.name, var_nm, age_code_neg, prefix, age_readable, lasso_symps, grp_age_code_neg) %>% 
-                distinct(), 
+    mutate(variable=paste(fm,    symptom,    vr_tm,    sep="_")) %>% 
+    left_join(pcs %>% select(variable = vr.name,    var_nm,    age_code_neg,    prefix,    age_readable,    lasso_symps,    grp_age_code_neg) %>% 
+                distinct(),    
               by = "variable")
   
   mens_symps <- ds_base0 %>% filter(prefix == "ps_mens") %>% select(symptom) %>% distinct() %>% pull()
   
   ds_base <- ds_base0  %>% 
     mutate(mens_flag = symptom %in% mens_symps) %>% 
-    mutate(not_elig_biosex = mens_flag & biosex_f %!in% c("Female", "Intersex")) %>% 
-    mutate(not_elig_age = ifelse(is.na(age_code_neg), NA, eval(parse(text = age_code_neg[1]))),
+    mutate(not_elig_biosex = mens_flag & biosex_f %!in% c("Female",    "Intersex")) %>% 
+    mutate(not_elig_age = ifelse(is.na(age_code_neg),    NA,    eval(parse(text = age_code_neg[1]))),   
            .by=age_code_neg) %>% 
-    mutate(not_elig_tf = replace_na(not_elig_age | not_elig_biosex | (mens_flag & visit_age<6), F)) %>% 
+    mutate(not_elig_tf = replace_na(not_elig_age | not_elig_biosex | (mens_flag & visit_age<6),    F)) %>% 
     filter(!not_elig_tf) %>% 
-    mutate(answer_n = case_when(vr_tm == "pilt" & value %in% 4:5 ~ 1,
-                                vr_tm == "pnlt" & value == 1 ~ 1,
-                                vr_tm %in% c("lt", "musicul") & value == 6 ~ 1,
-                                vr_tm %in% c("lt", "musicul") & value == 7 ~ 2,
-                                vr_tm == "a84" & value == 3 ~ 1,
-                                vr_tm == "curr" & value == 1 ~ 1,
-                                value %in% c(0, 2) ~ 0), 
-           sympanswer = as.numeric(answer_n > 0),
-           sympanswer_fu = as.numeric(ifelse(vr_tm %in% c("lt", "musicul") & !grepl("week", redcap_event_name), answer_n > 1, answer_n > 0)),
+    mutate(answer_n = case_when(vr_tm == "pilt" & value %in% 4:5 ~ 1,   
+                                vr_tm == "pnlt" & value == 1 ~ 1,   
+                                vr_tm %in% c("lt",    "musicul") & value == 6 ~ 1,   
+                                vr_tm %in% c("lt",    "musicul") & value == 7 ~ 2,   
+                                vr_tm == "a84" & value == 3 ~ 1,   
+                                vr_tm == "curr" & value == 1 ~ 1,   
+                                value %in% c(0,    2) ~ 0),    
+           sympanswer = as.numeric(answer_n > 0),   
+           sympanswer_fu = as.numeric(ifelse(vr_tm %in% c("lt",    "musicul") & !grepl("week",    redcap_event_name),    answer_n > 1,    answer_n > 0)),   
            sympanswer2 = as.numeric(answer_n > 1))
   
-  comb_select <- function(ds, pf){
+  comb_select <- function(ds,    pf){
     ds %>%  
-      select(record_id, redcap_event_name, 
-             symptom, starts_with("sympanswer")) %>% 
-      rename_with(\(x) gsub("^symp", pf, x), 
+      select(record_id,    redcap_event_name,    
+             symptom,    starts_with("sympanswer")) %>% 
+      rename_with(\(x) gsub("^symp",    pf,    x),    
                   starts_with("sympanswer"))
   }
   
   # This depends on the question asked to MUSIC ppts - need to confirm  
   ds_4wk <- ds_base %>% 
-    filter((!grepl("RP253", record_id) & arm_num == 2 & redcap_event_name %in% c("week_8_arm_2") & vr_tm == "a84") |
-             (!grepl("RP253", record_id) & arm_num == 4 & ((!is.na(ps_infected) & ps_infected == 1)| is.na(ps_infected) & infect_yn_f %in% "Infected") & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pilt") |
-             (!grepl("RP253", record_id) & ((!is.na(ps_infected) & ps_infected == 0)| is.na(ps_infected) & infect_yn_f %in% "Uninfected") & arm_num == 4 & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pnlt") |
-             (!grepl("RP253", record_id) & grepl("_arm_5$", redcap_event_name) & vr_tm == "lt") |
-             (grepl("RP253", record_id) & grepl("month", redcap_event_name) & vr_tm == "musicul")) %>%
+    filter((!grepl("RP253",    record_id) & arm_num == 2 & redcap_event_name %in% c("week_8_arm_2") & vr_tm == "a84") |
+             (!grepl("RP253",    record_id) & arm_num == 4 & ((!is.na(ps_infected) & ps_infected == 1)| is.na(ps_infected) & infect_yn_f %in% "Infected") & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pilt") |
+             (!grepl("RP253",    record_id) & ((!is.na(ps_infected) & ps_infected == 0)| is.na(ps_infected) & infect_yn_f %in% "Uninfected") & arm_num == 4 & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pnlt") |
+             (!grepl("RP253",    record_id) & grepl("_arm_5$",    redcap_event_name) & vr_tm == "lt") |
+             (grepl("RP253",    record_id) & grepl("month",    redcap_event_name) & vr_tm == "musicul")) %>%
     comb_select("final_")
   
   ds_now <- ds_base %>% 
-    filter(!grepl("RP253", record_id) & redcap_event_name %in% c("baseline_arm_4", "week_8_arm_2") & vr_tm == "curr" | 
-             grepl("RP253", record_id) & redcap_event_name %in% "baseline_arm_4" & vr_tm == "musicul") %>%
+    filter(!grepl("RP253",    record_id) & redcap_event_name %in% c("baseline_arm_4",    "week_8_arm_2") & vr_tm == "curr" | 
+             grepl("RP253",    record_id) & redcap_event_name %in% "baseline_arm_4" & vr_tm == "musicul") %>%
     comb_select("curr_")
   
   lasso_comb <- pcs %>% 
-    mutate(symptom = gsub("p.+_", "", var_nm)) %>% 
-    select(symptom, lasso_symps) %>% 
+    mutate(symptom = gsub("p.+_",    "",    var_nm)) %>% 
+    select(symptom,    lasso_symps) %>% 
     distinct()
   
-  get_pers <- function(vr_final, vr_curr, vr_flag){
-    case_when(vr_final ==-99 | vr_curr==-99~NA,
-              vr_flag & vr_final < 0  ~ NA,
-              vr_flag ~ vr_final,
-              is.na(vr_final) & is.na(vr_curr)~NA,
-              vr_final==1 & vr_curr==1~1,
-              vr_final < 0 | vr_curr < 0 ~NA,
+  get_pers <- function(vr_final,    vr_curr,    vr_flag){
+    case_when(vr_final ==-99 | vr_curr==-99~NA,   
+              vr_flag & vr_final < 0  ~ NA,   
+              vr_flag ~ vr_final,   
+              is.na(vr_final) & is.na(vr_curr)~NA,   
+              vr_final==1 & vr_curr==1~1,   
+              vr_final < 0 | vr_curr < 0 ~NA,   
               T~0)
   }
   
-  all_vrs <- ds_base %>% 
-    select(record_id, redcap_event_name, age_strata, biosex_f, 
-           infect_yn_f, study_grp, infect_yn, ps_colldt, ps_infected) %>% 
-    distinct()
   
   ds_out <- ds_4wk %>% 
-    full_join(ds_now, 
-              by=c("record_id", "redcap_event_name", "symptom")) %>% 
-    mutate(fu_flag = grepl("month", redcap_event_name)) %>% 
-    mutate(persistent_ans = get_pers(final_answer, curr_answer, fu_flag),
-           persistent_ans_fu = get_pers(final_answer_fu, curr_answer_fu, fu_flag),
-           persistent_ans2 = get_pers(final_answer2, curr_answer2, fu_flag)) %>% 
-    left_join(lasso_comb, by = join_by(symptom)) %>% 
-    left_join(ds_base0 %>% select(record_id, redcap_event_name, symptom, visit_age, grp_age_code_neg), 
-              by=c("record_id", "redcap_event_name", "symptom")) %>% 
-    mutate(grp_not_elig_age = ifelse(is.na(grp_age_code_neg ), F, eval(parse(text = grp_age_code_neg[1]))),
+    full_join(ds_now,    
+              by=c("record_id",    "redcap_event_name",    "symptom")) %>% 
+    mutate(fu_flag = grepl("month",    redcap_event_name)) %>% 
+    mutate(persistent_ans = get_pers(final_answer,    curr_answer,    fu_flag),   
+           persistent_ans_fu = get_pers(final_answer_fu,    curr_answer_fu,    fu_flag),   
+           persistent_ans2 = get_pers(final_answer2,    curr_answer2,    fu_flag)) %>% 
+    left_join(lasso_comb,    by = join_by(symptom)) %>% 
+    left_join(ds_base0 %>% select(record_id,    redcap_event_name,    symptom,    visit_age,    grp_age_code_neg),    
+              by=c("record_id",    "redcap_event_name",    "symptom")) %>% 
+    filter(!is.na(visit_age)) %>% 
+    mutate(grp_not_elig_age = ifelse(is.na(grp_age_code_neg ),    F,    eval(parse(text = grp_age_code_neg[1]))),   
            .by=grp_age_code_neg) %>% 
-    mutate(real_grp_symp=ifelse(grp_not_elig_age==F, lasso_symps, glue("ps_{symptom}"))) %>% 
-    full_join(all_vrs,
-              by = join_by(record_id, redcap_event_name)) %>% 
+    mutate(real_grp_symp=ifelse(grp_not_elig_age==F,    lasso_symps,    glue("ps_{symptom}"))) %>% 
     select(-lasso_symps) %>% 
     rename(lasso_symps=real_grp_symp) %>% 
-    mutate(sum_lasso=ifelse(any(!is.na(persistent_ans)), sum(persistent_ans, na.rm=T), NA),
-           sum_lasso_fu=ifelse(any(!is.na(persistent_ans_fu)), sum(persistent_ans_fu, na.rm=T), NA),
-           sum_lasso2=ifelse(any(!is.na(persistent_ans2)), sum(persistent_ans2, na.rm=T), NA),
-           .by=c(record_id, redcap_event_name, age_strata, biosex_f,infect_yn_f,
-                 study_grp,infect_yn,ps_colldt,!!sym(symp_vr),grp_not_elig_age)) %>% 
+    mutate(sum_lasso=ifelse(any(!is.na(persistent_ans)),    sum(persistent_ans,    na.rm=T),    NA),   
+           sum_lasso_fu=ifelse(any(!is.na(persistent_ans_fu)),    sum(persistent_ans_fu,    na.rm=T),    NA),   
+           sum_lasso2=ifelse(any(!is.na(persistent_ans2)),    sum(persistent_ans2,    na.rm=T),    NA),   
+           .by=c(record_id,    redcap_event_name,   !!sym(symp_vr),   grp_not_elig_age)) %>% 
     # filter(!is.na(sum_lasso)) %>% 
-    mutate(lasso_answer=ifelse(grp_not_elig_age==F, as.numeric(sum_lasso>0), persistent_ans),
-           lasso_answer_fu=ifelse(grp_not_elig_age==F,as.numeric(sum_lasso_fu>0), persistent_ans_fu),
-           lasso_answer2=ifelse(grp_not_elig_age==F, as.numeric(sum_lasso2>0), persistent_ans2)) %>% 
-    summarise(.by=c(record_id, redcap_event_name, age_strata, biosex_f,infect_yn_f,
-                    study_grp,infect_yn,ps_infected,ps_colldt,!!sym(symp_vr), lasso_answer,lasso_answer_fu, lasso_answer2))
+    mutate(lasso_answer=ifelse(grp_not_elig_age==F,    as.numeric(sum_lasso>0),    persistent_ans),   
+           lasso_answer_fu=ifelse(grp_not_elig_age==F,   as.numeric(sum_lasso_fu>0),    persistent_ans_fu),   
+           lasso_answer2=ifelse(grp_not_elig_age==F,    as.numeric(sum_lasso2>0),    persistent_ans2)) %>% 
+    summarise(.by=c(record_id,    redcap_event_name,   !!sym(symp_vr),    lasso_answer,   lasso_answer_fu,    lasso_answer2)) %>% 
+    left_join(visit_ds %>% 
+                select(record_id,    redcap_event_name,    age_strata,    ps_colldt,    ps_infected,   
+                       biosex_f,    infect_yn_f,    study_grp,    infect_yn),   
+              by = join_by(record_id,    redcap_event_name))
   
   ds_out
 }
@@ -1204,17 +1628,17 @@ cutoff_df <- data.frame(cutoff=c(4,3,5.5, 5),
 
 ####Note: Currently, we only have a PASC definition for certain age groups.
 #### We are unable to ascertain pasc status for other age groups.
-peds_pasc_fxn <- function(long_df, scores=score_tab, cutoff=cutoff_df, lasso_ans="lasso_answer"){
+peds_pasc_fxn <- function(long_df,    scores=score_tab,    cutoff=cutoff_df,    lasso_ans="lasso_answer"){
   
   symp_cents_ud <- tribble(
-    ~cluster , ~age_strata                     , ~ps_fever , ~ps_tired , ~ps_insomnia , ~ps_tiredwalk , ~ps_sweat , ~ps_hotcold , ~ps_lowapp , ~ps_highapp , ~ps_thirsty , ~ps_weightloss , ~ps_weightgain , ~ps_heightloss , ~ps_eye , ~ps_dryeyes , ~ps_eyebags , ~ps_vision , ~ps_lighthurts , ~ps_hearing , ~ps_tinnitus , ~ps_runnynose , ~ps_senses , ~ps_drymouth , ~ps_throat , ~ps_lostvoice , ~ps_swallowing , ~ps_teeth , ~ps_chapped , ~ps_drycough , ~ps_wetcough , ~ps_barkcough , ~ps_breathing , ~ps_painbreath , ~ps_painchest , ~ps_palprest , ~ps_palpexer , ~ps_lightheaded , ~ps_movement , ~ps_cramp , ~ps_nauseous , ~ps_diarrhea , ~ps_constipation , ~ps_painurine , ~ps_excesspee , ~ps_skin , ~ps_nails , ~ps_hair , ~ps_skincolor , ~ps_digitcolor , ~ps_muscle , ~ps_bodypain , ~ps_backneckpain , ~ps_headache , ~ps_shaky , ~ps_tingly , ~ps_cantmove , ~ps_brainfog , ~ps_talking , ~ps_sad , ~ps_anxious , ~ps_phobia , ~ps_fearpeople , ~ps_fearcrowd , ~ps_panicattack , ~ps_refuseschool , ~ps_nightmares , ~ps_hallucinate , ~ps_rocking , ~ps_hyperactive , ~ps_rulebreak , ~ps_liesteal , ~ps_repeatmem ,
-    1        , "Ages 12 - 17 (Adolescence)"    , 0.1205    , 0.9699    , 0.5964       , 0.6506        , 0.2952    , 0.4518      , 0.4759     , 0.1265      , 0.2470      , 0.1988         , 0.1205         , 0.0482         , 0.2108  , 0.1024      , 0.3133      , 0.2349     , 0.4217         , 0.0482      , 0.2169       , 0.2892        , 0.2952     , 0.1205       , 0.2349     , 0.0843        , 0.0964         , 0.0602    , 0.2470      , 0.2410       , 0.1566       , 0.0964        , 0.2892        , 0.1807         , 0.3434        , 0.4819       , 0.5120       , 0.9398          , 0.3976       , 0.4518    , 0.5542       , 0.2289       , 0.2651           , 0.0120        , 0.0663        , 0.2169   , 0.0602    , 0.1446   , 0.0843        , 0.0723         , 0.4940     , 0.7831       , 0.6145           , 0.8614       , 0.2952    , 0.3434     , 0.0482       , 0.7229       , 0.1325      , 0.4699  , 0.6446      , 0.2590     , 0.1867         , 0.3434        , 0.3614          , 0.2108           , 0.1988         , 0.0783          , 0.0542      , 0.0301          , 0.1024        , 0.0482       , 0.1446        ,
-    2        , "Ages 12 - 17 (Adolescence)"    , 0.0695    , 0.8930    , 0.4866       , 0.4118        , 0.0856    , 0.1711      , 0.2193     , 0.1070      , 0.1497      , 0.0909         , 0.1123         , 0.0160         , 0.1230  , 0.0321      , 0.1444      , 0.0909     , 0.1818         , 0.0000      , 0.0481       , 0.2941        , 0.1123     , 0.0214       , 0.1390     , 0.0267        , 0.0428         , 0.0428    , 0.1497      , 0.1765       , 0.0642       , 0.0428        , 0.0428        , 0.0428         , 0.0909        , 0.1016       , 0.1016       , 0.0642          , 0.1176       , 0.2193    , 0.1658       , 0.0909       , 0.1444           , 0.0267        , 0.0428        , 0.1230   , 0.0107    , 0.0481   , 0.0107        , 0.0160         , 0.2086     , 0.6684       , 0.3850           , 0.4385       , 0.0428    , 0.0535     , 0.0053       , 0.4011       , 0.0642      , 0.3904  , 0.4278      , 0.1444     , 0.0802         , 0.1872        , 0.1711          , 0.1711           , 0.0802         , 0.0374          , 0.0267      , 0.0856          , 0.1176        , 0.0428       , 0.0695        ,
-    3        , "Ages 12 - 17 (Adolescence)"    , 0.0761    , 0.2826    , 0.2065       , 0.0326        , 0.0326    , 0.0109      , 0.1522     , 0.0326      , 0.0978      , 0.0543         , 0.0217         , 0.0109         , 0.0870  , 0.0217      , 0.0543      , 0.0217     , 0.0326         , 0.0000      , 0.0109       , 0.2065        , 1.0000     , 0.0435       , 0.1304     , 0.0543        , 0.0435         , 0.0217    , 0.1196      , 0.1630       , 0.0761       , 0.1196        , 0.0435        , 0.0217         , 0.0326        , 0.0761       , 0.0543       , 0.0543          , 0.0217       , 0.0435    , 0.0978       , 0.0543       , 0.0435           , 0.0000        , 0.0000        , 0.0652   , 0.0000    , 0.0109   , 0.0109        , 0.0109         , 0.0109     , 0.1413       , 0.0870           , 0.2174       , 0.0109    , 0.0109     , 0.0000       , 0.1304       , 0.0109      , 0.2065  , 0.2391      , 0.0543     , 0.0217         , 0.0870        , 0.0761          , 0.0543           , 0.0109         , 0.0109          , 0.0109      , 0.0543          , 0.0217        , 0.0217       , 0.0000        ,
-    1        , "Ages 6 - 11 (Middle Childhood)", 0.2069    , 0.7931    , 0.6207       , 0.6897        , 0.2069    , 0.4138      , 0.2414     , 0.2069      , 0.2414      , 0.0345         , 0.2414         , 0.0000         , 0.2414  , 0.0345      , 0.3793      , 0.2069     , 0.3793         , 0.1724      , 0.2759       , 0.4483        , 0.2759     , 0.1379       , 0.4138     , 0.0345        , 0.1379         , 0.1724    , 0.3103      , 0.3448       , 0.2069       , 0.1724        , 0.3793        , 0.3103         , 0.4828        , 0.4138       , 0.5517       , 0.8621          , 0.5172       , 0.7586    , 0.6552       , 0.3448       , 0.2759           , 0.0690        , 0.1034        , 0.4828   , 0.1034    , 0.0690   , 0.1379        , 0.1724         , 0.4828     , 0.8276       , 0.5862           , 1.0000       , 0.3448    , 0.2759     , 0.1034       , 0.7931       , 0.2414      , 0.6897  , 0.6897      , 0.2759     , 0.2069         , 0.3103        , NA              , 0.4483           , 0.3793         , 0.1034          , 0.1379      , 0.1379          , 0.2069        , 0.0345       , 0.3103        ,
-    2        , "Ages 6 - 11 (Middle Childhood)", 0.0500    , 0.5250    , 0.2000       , 0.4250        , 0.1250    , 0.1250      , 0.2750     , 0.0500      , 0.1500      , 0.1000         , 0.0500         , 0.0000         , 0.2000  , 0.0500      , 0.2500      , 0.2250     , 0.2000         , 0.0750      , 0.0750       , 0.3750        , 0.1500     , 0.0250       , 0.1250     , 0.0500        , 0.0000         , 0.0500    , 0.1500      , 0.2500       , 0.0500       , 0.0500        , 0.0750        , 0.1000         , 0.1500        , 0.2000       , 0.2250       , 0.2250          , 0.1500       , 0.0500    , 0.1500       , 0.0750       , 0.1000           , 0.0750        , 0.0750        , 0.2500   , 0.0000    , 0.0500   , 0.0500        , 0.0000         , 0.1250     , 0.6000       , 0.4250           , 0.9500       , 0.0750    , 0.1250     , 0.0250       , 0.2500       , 0.0500      , 0.2750  , 0.3250      , 0.1000     , 0.0750         , 0.1250        , NA              , 0.1500           , 0.1750         , 0.0500          , 0.0000      , 0.1000          , 0.1000        , 0.0250       , 0.0250        ,
-    3        , "Ages 6 - 11 (Middle Childhood)", 0.0200    , 0.3600    , 0.6400       , 0.2600        , 0.0800    , 0.0200      , 0.2800     , 0.1000      , 0.1400      , 0.0800         , 0.2000         , 0.0200         , 0.1000  , 0.0400      , 0.2200      , 0.0800     , 0.1200         , 0.0800      , 0.0400       , 0.3600        , 0.1600     , 0.0800       , 0.0200     , 0.0000        , 0.0200         , 0.1000    , 0.2200      , 0.1800       , 0.0600       , 0.0800        , 0.0200        , 0.0000         , 0.0400        , 0.1000       , 0.0800       , 0.0600          , 0.1400       , 0.1600    , 0.1200       , 0.1000       , 0.1000           , 0.0200        , 0.0600        , 0.2400   , 0.0400    , 0.0400   , 0.0400        , 0.0200         , 0.1400     , 0.3000       , 0.2200           , 0.0000       , 0.0200    , 0.0600     , 0.0200       , 0.6200       , 0.1400      , 0.3000  , 0.5000      , 0.4800     , 0.1800         , 0.3000        , NA              , 0.2200           , 0.2400         , 0.0600          , 0.0800      , 0.3000          , 0.3000        , 0.1400       , 0.2400        ,
-    4        , "Ages 6 - 11 (Middle Childhood)", 0.1212    , 0.3636    , 0.2727       , 0.2424        , 0.1212    , 0.0909      , 0.3030     , 0.1515      , 0.1818      , 0.0303         , 0.0606         , 0.0000         , 0.0909  , 0.0000      , 0.1515      , 0.0303     , 0.0606         , 0.0606      , 0.0606       , 0.1818        , 0.1212     , 0.0000       , 0.1515     , 0.0606        , 0.0909         , 0.0303    , 0.1212      , 0.1818       , 0.1818       , 0.1212        , 0.0606        , 0.0000         , 0.1515        , 0.1212       , 0.0909       , 0.0909          , 0.0909       , 1.0000    , 0.6061       , 0.1515       , 0.3030           , 0.0303        , 0.0909        , 0.2727   , 0.0000    , 0.0303   , 0.0606        , 0.0000         , 0.0909     , 0.4242       , 0.0606           , 0.5758       , 0.0000    , 0.0303     , 0.0000       , 0.0909       , 0.0303      , 0.2121  , 0.4242      , 0.1212     , 0.1515         , 0.1212        , NA              , 0.1515           , 0.1515         , 0.0303          , 0.0303      , 0.1515          , 0.1515        , 0.0606       , 0.0606        ,
+    ~cluster ,    ~age_strata                     ,    ~ps_fever ,    ~ps_tired ,    ~ps_insomnia ,    ~ps_tiredwalk ,    ~ps_sweat ,    ~ps_hotcold ,    ~ps_lowapp ,    ~ps_highapp ,    ~ps_thirsty ,    ~ps_weightloss ,    ~ps_weightgain ,    ~ps_heightloss ,    ~ps_eye ,    ~ps_dryeyes ,    ~ps_eyebags ,    ~ps_vision ,    ~ps_lighthurts ,    ~ps_hearing ,    ~ps_tinnitus ,    ~ps_runnynose ,    ~ps_senses ,    ~ps_drymouth ,    ~ps_throat ,    ~ps_lostvoice ,    ~ps_swallowing ,    ~ps_teeth ,    ~ps_chapped ,    ~ps_drycough ,    ~ps_wetcough ,    ~ps_barkcough ,    ~ps_breathing ,    ~ps_painbreath ,    ~ps_painchest ,    ~ps_palprest ,    ~ps_palpexer ,    ~ps_lightheaded ,    ~ps_movement ,    ~ps_cramp ,    ~ps_nauseous ,    ~ps_diarrhea ,    ~ps_constipation ,    ~ps_painurine ,    ~ps_excesspee ,    ~ps_skin ,    ~ps_nails ,    ~ps_hair ,    ~ps_skincolor ,    ~ps_digitcolor ,    ~ps_muscle ,    ~ps_bodypain ,    ~ps_backneckpain ,    ~ps_headache ,    ~ps_shaky ,    ~ps_tingly ,    ~ps_cantmove ,    ~ps_brainfog ,    ~ps_talking ,    ~ps_sad ,    ~ps_anxious ,    ~ps_phobia ,    ~ps_fearpeople ,    ~ps_fearcrowd ,    ~ps_panicattack ,    ~ps_refuseschool ,    ~ps_nightmares ,    ~ps_hallucinate ,    ~ps_rocking ,    ~ps_hyperactive ,    ~ps_rulebreak ,    ~ps_liesteal ,    ~ps_repeatmem ,   
+    1        ,    "Ages 12 - 17 (Adolescence)"    ,    0.1205    ,    0.9699    ,    0.5964       ,    0.6506        ,    0.2952    ,    0.4518      ,    0.4759     ,    0.1265      ,    0.2470      ,    0.1988         ,    0.1205         ,    0.0482         ,    0.2108  ,    0.1024      ,    0.3133      ,    0.2349     ,    0.4217         ,    0.0482      ,    0.2169       ,    0.2892        ,    0.2952     ,    0.1205       ,    0.2349     ,    0.0843        ,    0.0964         ,    0.0602    ,    0.2470      ,    0.2410       ,    0.1566       ,    0.0964        ,    0.2892        ,    0.1807         ,    0.3434        ,    0.4819       ,    0.5120       ,    0.9398          ,    0.3976       ,    0.4518    ,    0.5542       ,    0.2289       ,    0.2651           ,    0.0120        ,    0.0663        ,    0.2169   ,    0.0602    ,    0.1446   ,    0.0843        ,    0.0723         ,    0.4940     ,    0.7831       ,    0.6145           ,    0.8614       ,    0.2952    ,    0.3434     ,    0.0482       ,    0.7229       ,    0.1325      ,    0.4699  ,    0.6446      ,    0.2590     ,    0.1867         ,    0.3434        ,    0.3614          ,    0.2108           ,    0.1988         ,    0.0783          ,    0.0542      ,    0.0301          ,    0.1024        ,    0.0482       ,    0.1446        ,   
+    2        ,    "Ages 12 - 17 (Adolescence)"    ,    0.0695    ,    0.8930    ,    0.4866       ,    0.4118        ,    0.0856    ,    0.1711      ,    0.2193     ,    0.1070      ,    0.1497      ,    0.0909         ,    0.1123         ,    0.0160         ,    0.1230  ,    0.0321      ,    0.1444      ,    0.0909     ,    0.1818         ,    0.0000      ,    0.0481       ,    0.2941        ,    0.1123     ,    0.0214       ,    0.1390     ,    0.0267        ,    0.0428         ,    0.0428    ,    0.1497      ,    0.1765       ,    0.0642       ,    0.0428        ,    0.0428        ,    0.0428         ,    0.0909        ,    0.1016       ,    0.1016       ,    0.0642          ,    0.1176       ,    0.2193    ,    0.1658       ,    0.0909       ,    0.1444           ,    0.0267        ,    0.0428        ,    0.1230   ,    0.0107    ,    0.0481   ,    0.0107        ,    0.0160         ,    0.2086     ,    0.6684       ,    0.3850           ,    0.4385       ,    0.0428    ,    0.0535     ,    0.0053       ,    0.4011       ,    0.0642      ,    0.3904  ,    0.4278      ,    0.1444     ,    0.0802         ,    0.1872        ,    0.1711          ,    0.1711           ,    0.0802         ,    0.0374          ,    0.0267      ,    0.0856          ,    0.1176        ,    0.0428       ,    0.0695        ,   
+    3        ,    "Ages 12 - 17 (Adolescence)"    ,    0.0761    ,    0.2826    ,    0.2065       ,    0.0326        ,    0.0326    ,    0.0109      ,    0.1522     ,    0.0326      ,    0.0978      ,    0.0543         ,    0.0217         ,    0.0109         ,    0.0870  ,    0.0217      ,    0.0543      ,    0.0217     ,    0.0326         ,    0.0000      ,    0.0109       ,    0.2065        ,    1.0000     ,    0.0435       ,    0.1304     ,    0.0543        ,    0.0435         ,    0.0217    ,    0.1196      ,    0.1630       ,    0.0761       ,    0.1196        ,    0.0435        ,    0.0217         ,    0.0326        ,    0.0761       ,    0.0543       ,    0.0543          ,    0.0217       ,    0.0435    ,    0.0978       ,    0.0543       ,    0.0435           ,    0.0000        ,    0.0000        ,    0.0652   ,    0.0000    ,    0.0109   ,    0.0109        ,    0.0109         ,    0.0109     ,    0.1413       ,    0.0870           ,    0.2174       ,    0.0109    ,    0.0109     ,    0.0000       ,    0.1304       ,    0.0109      ,    0.2065  ,    0.2391      ,    0.0543     ,    0.0217         ,    0.0870        ,    0.0761          ,    0.0543           ,    0.0109         ,    0.0109          ,    0.0109      ,    0.0543          ,    0.0217        ,    0.0217       ,    0.0000        ,   
+    1        ,    "Ages 6 - 11 (Middle Childhood)",    0.2069    ,    0.7931    ,    0.6207       ,    0.6897        ,    0.2069    ,    0.4138      ,    0.2414     ,    0.2069      ,    0.2414      ,    0.0345         ,    0.2414         ,    0.0000         ,    0.2414  ,    0.0345      ,    0.3793      ,    0.2069     ,    0.3793         ,    0.1724      ,    0.2759       ,    0.4483        ,    0.2759     ,    0.1379       ,    0.4138     ,    0.0345        ,    0.1379         ,    0.1724    ,    0.3103      ,    0.3448       ,    0.2069       ,    0.1724        ,    0.3793        ,    0.3103         ,    0.4828        ,    0.4138       ,    0.5517       ,    0.8621          ,    0.5172       ,    0.7586    ,    0.6552       ,    0.3448       ,    0.2759           ,    0.0690        ,    0.1034        ,    0.4828   ,    0.1034    ,    0.0690   ,    0.1379        ,    0.1724         ,    0.4828     ,    0.8276       ,    0.5862           ,    1.0000       ,    0.3448    ,    0.2759     ,    0.1034       ,    0.7931       ,    0.2414      ,    0.6897  ,    0.6897      ,    0.2759     ,    0.2069         ,    0.3103        ,    NA              ,    0.4483           ,    0.3793         ,    0.1034          ,    0.1379      ,    0.1379          ,    0.2069        ,    0.0345       ,    0.3103        ,   
+    2        ,    "Ages 6 - 11 (Middle Childhood)",    0.0500    ,    0.5250    ,    0.2000       ,    0.4250        ,    0.1250    ,    0.1250      ,    0.2750     ,    0.0500      ,    0.1500      ,    0.1000         ,    0.0500         ,    0.0000         ,    0.2000  ,    0.0500      ,    0.2500      ,    0.2250     ,    0.2000         ,    0.0750      ,    0.0750       ,    0.3750        ,    0.1500     ,    0.0250       ,    0.1250     ,    0.0500        ,    0.0000         ,    0.0500    ,    0.1500      ,    0.2500       ,    0.0500       ,    0.0500        ,    0.0750        ,    0.1000         ,    0.1500        ,    0.2000       ,    0.2250       ,    0.2250          ,    0.1500       ,    0.0500    ,    0.1500       ,    0.0750       ,    0.1000           ,    0.0750        ,    0.0750        ,    0.2500   ,    0.0000    ,    0.0500   ,    0.0500        ,    0.0000         ,    0.1250     ,    0.6000       ,    0.4250           ,    0.9500       ,    0.0750    ,    0.1250     ,    0.0250       ,    0.2500       ,    0.0500      ,    0.2750  ,    0.3250      ,    0.1000     ,    0.0750         ,    0.1250        ,    NA              ,    0.1500           ,    0.1750         ,    0.0500          ,    0.0000      ,    0.1000          ,    0.1000        ,    0.0250       ,    0.0250        ,   
+    3        ,    "Ages 6 - 11 (Middle Childhood)",    0.0200    ,    0.3600    ,    0.6400       ,    0.2600        ,    0.0800    ,    0.0200      ,    0.2800     ,    0.1000      ,    0.1400      ,    0.0800         ,    0.2000         ,    0.0200         ,    0.1000  ,    0.0400      ,    0.2200      ,    0.0800     ,    0.1200         ,    0.0800      ,    0.0400       ,    0.3600        ,    0.1600     ,    0.0800       ,    0.0200     ,    0.0000        ,    0.0200         ,    0.1000    ,    0.2200      ,    0.1800       ,    0.0600       ,    0.0800        ,    0.0200        ,    0.0000         ,    0.0400        ,    0.1000       ,    0.0800       ,    0.0600          ,    0.1400       ,    0.1600    ,    0.1200       ,    0.1000       ,    0.1000           ,    0.0200        ,    0.0600        ,    0.2400   ,    0.0400    ,    0.0400   ,    0.0400        ,    0.0200         ,    0.1400     ,    0.3000       ,    0.2200           ,    0.0000       ,    0.0200    ,    0.0600     ,    0.0200       ,    0.6200       ,    0.1400      ,    0.3000  ,    0.5000      ,    0.4800     ,    0.1800         ,    0.3000        ,    NA              ,    0.2200           ,    0.2400         ,    0.0600          ,    0.0800      ,    0.3000          ,    0.3000        ,    0.1400       ,    0.2400        ,   
+    4        ,    "Ages 6 - 11 (Middle Childhood)",    0.1212    ,    0.3636    ,    0.2727       ,    0.2424        ,    0.1212    ,    0.0909      ,    0.3030     ,    0.1515      ,    0.1818      ,    0.0303         ,    0.0606         ,    0.0000         ,    0.0909  ,    0.0000      ,    0.1515      ,    0.0303     ,    0.0606         ,    0.0606      ,    0.0606       ,    0.1818        ,    0.1212     ,    0.0000       ,    0.1515     ,    0.0606        ,    0.0909         ,    0.0303    ,    0.1212      ,    0.1818       ,    0.1818       ,    0.1212        ,    0.0606        ,    0.0000         ,    0.1515        ,    0.1212       ,    0.0909       ,    0.0909          ,    0.0909       ,    1.0000    ,    0.6061       ,    0.1515       ,    0.3030           ,    0.0303        ,    0.0909        ,    0.2727   ,    0.0000    ,    0.0303   ,    0.0606        ,    0.0000         ,    0.0909     ,    0.4242       ,    0.0606           ,    0.5758       ,    0.0000    ,    0.0303     ,    0.0000       ,    0.0909       ,    0.0303      ,    0.2121  ,    0.4242      ,    0.1212     ,    0.1515         ,    0.1212        ,    NA              ,    0.1515           ,    0.1515         ,    0.0303          ,    0.0303      ,    0.1515          ,    0.1515        ,    0.0606       ,    0.0606        ,   
   )
   symp_cents <- tribble(
     ~age_strata                    , ~cluster , ~ps_fever , ~ps_tired , ~ps_insomnia , ~ps_tiredwalk , ~ps_sweat , ~ps_hotcold , ~ps_lowapp , ~ps_highapp , ~ps_thirsty , ~ps_weightloss , ~ps_weightgain , ~ps_heightloss , ~ps_eye , ~ps_dryeyes , ~ps_eyebags , ~ps_vision , ~ps_lighthurts , ~ps_hearing , ~ps_tinnitus , ~ps_runnynose , ~ps_senses , ~ps_drymouth , ~ps_throat , ~ps_lostvoice , ~ps_swallowing , ~ps_teeth , ~ps_chapped , ~ps_drycough , ~ps_wetcough , ~ps_barkcough , ~ps_breathing , ~ps_painbreath , ~ps_painchest , ~ps_palprest , ~ps_palpexer , ~ps_lightheaded , ~ps_movement , ~ps_cramp , ~ps_nauseous , ~ps_diarrhea , ~ps_constipation , ~ps_painurine , ~ps_excesspee , ~ps_skin , ~ps_nails , ~ps_hair , ~ps_skincolor , ~ps_digitcolor , ~ps_muscle , ~ps_bodypain , ~ps_backneckpain , ~ps_headache , ~ps_shaky , ~ps_tingly , ~ps_cantmove , ~ps_brainfog , ~ps_talking , ~ps_sad , ~ps_anxious , ~ps_phobia , ~ps_fearpeople , ~ps_fearcrowd , ~ps_panicattack , ~ps_refuseschool , ~ps_nightmares , ~ps_hallucinate , ~ps_rocking , ~ps_hyperactive , ~ps_rulebreak , ~ps_liesteal , ~ps_repeatmem , ~ps_periodmiss , ~ps_periodfreq , ~ps_periodheavy , ~ps_periodlight ,
@@ -1229,161 +1653,166 @@ peds_pasc_fxn <- function(long_df, scores=score_tab, cutoff=cutoff_df, lasso_ans
     'Ages 6 - 11 (Middle Childhood)' , 4        , 0.1212    , 0.3636    , 0.2727       , 0.2424        , 0.1212    , 0.0909      , 0.3030     , 0.1515      , 0.1818      , 0.0303         , 0.0606         , 0.0000         , 0.0909  , 0.0000      , 0.1515      , 0.0303     , 0.0606         , 0.0606      , 0.0606       , 0.1818        , 0.1212     , 0.0000       , 0.1515     , 0.0606        , 0.0909         , 0.0303    , 0.1212      , 0.1818       , 0.1818       , 0.1212        , 0.0606        , 0.0000         , 0.1515        , 0.1212       , 0.0909       , 0.0909          , 0.0909       , 1.0000    , 0.6061       , 0.1515       , 0.3030           , 0.0303        , 0.0909        , 0.2727   , 0.0000    , 0.0303   , 0.0606        , 0.0000         , 0.0909     , 0.4242       , 0.0606           , 0.5758       , 0.0000    , 0.0303     , 0.0000       , 0.0909       , 0.0303      , 0.2121  , 0.4242      , 0.1212     , 0.1515         , 0.1212        , 0.0000          , 0.1515           , 0.1515         , 0.0303          , 0.0303      , 0.1515          , 0.1515        , 0.0606       , 0.0606        , 0.0000         , 0.0000         , 0.0000          , 0.0000,
   )
   
-  sum_na <- function(x, ana_out = 0) {
+  sum_na <- function(x,    ana_out = 0) {
     if(all(is.na(x))) return(ana_out)
-    sum(x, na.rm=T)
+    sum(x,    na.rm=T)
   }
   
   
-  clus_vrs <- setdiff(names(symp_cents), c("cluster", "age_strata"))
+  clus_vrs <- setdiff(names(symp_cents),    c("cluster",    "age_strata"))
   
-  get_clus <- function(ds, vr, pf=""){
+  get_clus <- function(ds,    vr,    pf=""){
     fxndat0 <- ds %>% 
-      select(record_id, redcap_event_name, age_strata, lasso_symps, !!sym(vr)) %>% 
+      select(record_id,    redcap_event_name,    age_strata,    lasso_symps,    !!sym(vr)) %>% 
       filter(lasso_symps %in% clus_vrs) %>% 
       left_join(symp_cents %>% 
                   filter(!is.na(cluster)) %>% 
-                  pivot_longer(-c(cluster, age_strata),
-                               names_to="lasso_symps", values_to="cent_val"),
-                by = join_by(lasso_symps, age_strata),
+                  pivot_longer(-c(cluster,    age_strata),   
+                               names_to="lasso_symps",    values_to="cent_val"),   
+                by = join_by(lasso_symps,    age_strata),   
                 relationship = "many-to-many") %>% 
-      mutate(sq_diff = (replace_na(!!sym(vr), 0) - replace_na(cent_val, 0)) ^ 2)
+      left_join(scores,   
+                by = join_by(lasso_symps,    age_strata),   
+                relationship = "many-to-many") %>%
+      filter(!is.na(score)) %>% 
+      select(-score) %>% 
+      #mutate(across(vr,    \(x) replace_na(x,    0))) %>% 
+      mutate(sq_diff = ifelse(is.na(cent_val) ,    NA,    (replace_na(!!sym(vr),   0) - cent_val) ^ 2 ))
     
     fxndat <- fxndat0 %>% 
-      summarise(eucl_dist = sqrt(sum(sq_diff, na.rm=T)),
-                .by=c(record_id, redcap_event_name, cluster)) %>% 
-      arrange(record_id, redcap_event_name, eucl_dist)
+      summarise(eucl_dist = sqrt(sum(sq_diff,    na.rm=T)),   
+                .by=c(record_id,    redcap_event_name,    cluster)) %>% 
+      arrange(record_id,    redcap_event_name,    eucl_dist)
     
     fxndat_summ <- fxndat %>% 
-      filter(row_number() == 1, 
-             .by=c(record_id, redcap_event_name))
+      filter(row_number() == 1,    
+             .by=c(record_id,    redcap_event_name))
     
     fxndat_wide <- fxndat_summ %>% 
-      select(record_id, redcap_event_name, cluster) %>% 
+      select(record_id,    redcap_event_name,    cluster) %>% 
       mutate(year=2024) %>% 
-      pivot_wider(names_from=year, values_from= cluster,
+      pivot_wider(names_from=year,    values_from= cluster,   
                   names_prefix = paste0("pasc_cc_"))
     
     ds %>% 
       left_join(scores %>% 
-                  select(lasso_symps, score, age_strata), 
-                by=c("lasso_symps", "age_strata")) %>% 
-      summarise(n_total_symp=n(),
-                n_missing_symp=sum(is.na(!!sym(vr))),
-                n_score_symps=sum(!is.na(score)),
-                n_na_score_symps=sum(is.na(!!sym(vr)) & !is.na(score)),
-                max_missed_score=sum_na(score[is.na(!!sym(vr))]),
-                max_poss_score=sum_na(score),
-                score_sum=sum_na(score*!!sym(vr)),
-                score_sum_nona=ifelse(is.na(score_sum),0,score_sum),
-                .by=c(record_id, redcap_event_name, age_strata)) %>% 
-      left_join(cutoff, by="age_strata") %>% 
-      mutate(n_done = n_total_symp - n_missing_symp,
-             pasc = factor(case_when(score_sum_nona< cutoff~"Unspecified",
-                                     score_sum >= cutoff~"PASC",
-                                     score_sum <  cutoff~"Unspecified"), 
-                           levels = c("PASC", "Unspecified"), 
-                           ordered=T),
-             pasc_lc=factor(case_when(pasc %in% "PASC"~"Long COVID",
-                                      T~pasc),
-                            levels = c("Long COVID", "Unspecified"), 
-                            ordered=T),
-             pasc_ndone_na=factor(case_when(n_done == 0 ~ NA,
-                                            score_sum >= cutoff~"PASC",
-                                            score_sum <  cutoff~"Unspecified"), 
-                                  levels = c("PASC", "Unspecified"), 
-                                  ordered=T),
-             pasc_na = factor(case_when(score_sum < cutoff & max_missed_score >= (cutoff - score_sum) ~ NA,
-                                        score_sum >= cutoff~"PASC",
-                                        score_sum <  cutoff~"Unspecified"), 
-                              levels = c("PASC", "Unspecified"), 
+                  select(lasso_symps,    score,    age_strata),    
+                by=c("lasso_symps",    "age_strata")) %>% 
+      summarise(n_total_symp=n(),   
+                n_missing_symp=sum(is.na(!!sym(vr))),   
+                n_score_symps=sum(!is.na(score)),   
+                n_na_score_symps=sum(is.na(!!sym(vr)) & !is.na(score)),   
+                max_missed_score=sum_na(score[is.na(!!sym(vr))]),   
+                max_poss_score=sum_na(score),   
+                score_sum=sum_na(score*!!sym(vr)),   
+                score_sum_nona=ifelse(is.na(score_sum),   0,   score_sum),   
+                .by=c(record_id,    redcap_event_name,    age_strata)) %>% 
+      left_join(cutoff,    by="age_strata") %>% 
+      mutate(n_done = n_total_symp - n_missing_symp,   
+             pasc = factor(case_when(score_sum_nona< cutoff~"Unspecified",   
+                                     score_sum >= cutoff~"PASC",   
+                                     score_sum <  cutoff~"Unspecified"),    
+                           levels = c("PASC",    "Unspecified"),    
+                           ordered=T),   
+             pasc_lc=factor(case_when(pasc %in% "PASC"~"Long COVID",   
+                                      T~pasc),   
+                            levels = c("Long COVID",    "Unspecified"),    
+                            ordered=T),   
+             pasc_ndone_na=factor(case_when(n_done == 0 ~ NA,   
+                                            score_sum >= cutoff~"PASC",   
+                                            score_sum <  cutoff~"Unspecified"),    
+                                  levels = c("PASC",    "Unspecified"),    
+                                  ordered=T),   
+             pasc_na = factor(case_when(score_sum < cutoff & max_missed_score >= (cutoff - score_sum) ~ NA,   
+                                        score_sum >= cutoff~"PASC",   
+                                        score_sum <  cutoff~"Unspecified"),    
+                              levels = c("PASC",    "Unspecified"),    
                               ordered=T)) %>% 
-      left_join(fxndat_wide, by=join_by(record_id, redcap_event_name)) %>% 
-      mutate(across(starts_with("pasc_cc_"), \(x) ifelse(pasc == "PASC", x, 0)))
+      left_join(fxndat_wide,    by=join_by(record_id,    redcap_event_name)) %>% 
+      mutate(across(starts_with("pasc_cc_"),    \(x) ifelse(pasc == "PASC",    x,    0)))
   }
   
-  ds_score <- get_clus(long_df, "lasso_answer")
-  ds_score_fu <- get_clus(long_df, "lasso_answer_fu")
-  ds_score2 <- get_clus(long_df, "lasso_answer2")
-  
+  ds_score <- get_clus(long_df,    "lasso_answer")
+  ds_score_fu <- get_clus(long_df,    "lasso_answer_fu")
+  ds_score2 <- get_clus(long_df,    "lasso_answer2")
   
   if(lasso_ans == "lasso_answer2"){
     ## Used for selection to T3 and not to be used elsewhere
     wide_df <- long_df %>% 
-      select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_colldt,
-             infect_yn, lasso_answer2, lasso_symps) %>% 
-      pivot_wider(names_from=lasso_symps, values_from = lasso_answer2) %>% 
+      select(-any_of(c('lasso_answer_fu',    'lasso_answer'))) %>% 
+      pivot_wider(names_from=lasso_symps,    values_from = lasso_answer2) %>% 
       left_join(ds_score2 %>% 
-                  select(record_id, redcap_event_name, score_sum, cutoff, n_na_score_symps, n_score_symps, starts_with("pasc")),
-                by = join_by(record_id, redcap_event_name)) %>%
+                  select(record_id,    redcap_event_name,    score_sum,    cutoff,    n_na_score_symps,    n_score_symps,    starts_with("pasc")),   
+                by = join_by(record_id,    redcap_event_name)) %>%
       select(-any_of(starts_with("pasc_cc_")))
     
     long_score <- long_df %>% 
-      select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_colldt,
-             infect_yn, starts_with("pasc_cc_"), lasso_answer2, lasso_symps) %>% 
+      select(-any_of(c('lasso_answer_fu',    'lasso_answer'))) %>% 
       left_join(ds_score2 %>% 
-                  select(record_id, redcap_event_name, score_sum, cutoff, n_na_score_symps, n_score_symps, starts_with("pasc")),
-                by = join_by(record_id, redcap_event_name)) %>%
+                  select(record_id,    redcap_event_name,    score_sum,    cutoff,    n_na_score_symps,    n_score_symps,    starts_with("pasc")),   
+                by = join_by(record_id,    redcap_event_name)) %>%
       select(-any_of(starts_with("pasc_cc_")))
   } else {
     wide_df <- long_df %>% 
-      select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_colldt,
-             infect_yn, ps_infected, lasso_answer, lasso_answer_fu, lasso_symps) %>% 
-      pivot_wider(names_from=lasso_symps, values_from = c(lasso_answer, lasso_answer_fu),
-                  names_glue="{ifelse(.value=='lasso_answer', lasso_symps, paste0(lasso_symps, '_now'))}") %>% 
+      select(-any_of(c('lasso_answer2'))) %>% 
+      pivot_wider(names_from=lasso_symps,    values_from = c(lasso_answer,    lasso_answer_fu),   
+                  names_glue="{ifelse(.value=='lasso_answer',    lasso_symps,    paste0(lasso_symps,    '_now'))}") %>% 
       left_join(ds_score %>% 
-                  select(record_id, redcap_event_name, score_sum, cutoff, n_na_score_symps, n_score_symps, starts_with("pasc")),
-                by = join_by(record_id, redcap_event_name)) %>% 
+                  select(record_id,    redcap_event_name,    score_sum,    cutoff,    n_na_score_symps,    n_score_symps,    starts_with("pasc")),   
+                by = join_by(record_id,    redcap_event_name)) %>% 
       left_join(ds_score_fu %>% 
-                  select(record_id, redcap_event_name, score_sum_now=score_sum, n_score_symps_now=n_score_symps, starts_with("pasc")) %>% 
-                  rename_with(\(x) paste0(x, "_now"), starts_with("pasc")),
-                by = join_by(record_id, redcap_event_name))
+                  select(record_id,    redcap_event_name,    score_sum_now=score_sum,    n_score_symps_now=n_score_symps,    starts_with("pasc")) %>% 
+                  rename_with(\(x) paste0(x,    "_now"),    starts_with("pasc")),   
+                by = join_by(record_id,    redcap_event_name))
     
     long_score <- long_df %>% 
-      select(record_id, redcap_event_name, age_strata, biosex_f, infect_yn_f, study_grp, ps_infected,  ps_colldt,
-             infect_yn, starts_with("pasc_cc_"), lasso_answer_fu, lasso_answer, lasso_symps) %>% 
+      select(-any_of(c('lasso_answer2'))) %>% 
       left_join(ds_score %>% 
-                  select(record_id, redcap_event_name, score_sum, cutoff, n_na_score_symps, n_score_symps, starts_with("pasc")),
-                by = join_by(record_id, redcap_event_name)) %>% 
+                  select(record_id,    redcap_event_name,    score_sum,    cutoff,    n_na_score_symps,    n_score_symps,    starts_with("pasc")),   
+                by = join_by(record_id,    redcap_event_name)) %>% 
       left_join(ds_score_fu %>% 
-                  select(record_id, redcap_event_name, score_sum_now=score_sum, n_score_symps_now=n_score_symps, starts_with("pasc")) %>% 
-                  rename_with(\(x) paste0(x, "_now"), starts_with("pasc")),
-                by = join_by(record_id, redcap_event_name))
+                  select(record_id,    redcap_event_name,    score_sum_now=score_sum,    n_score_symps_now=n_score_symps,    starts_with("pasc")) %>% 
+                  rename_with(\(x) paste0(x,    "_now"),    starts_with("pasc")),   
+                by = join_by(record_id,    redcap_event_name))
   }
   
   grp_symp_key <- peds_core_symps %>% 
-    summarise(.by=c(lasso_symps, grp_age_code)) %>% 
+    summarise(.by=c(lasso_symps,    grp_age_code)) %>% 
     crossing(age_strata=levels(wide_df$age_strata)) %>% 
-    mutate(elig_age_strata=case_when(is.na(grp_age_code)~T, 
+    mutate(elig_age_strata=case_when(is.na(grp_age_code)~T,   
+                                     grp_age_code %in% c("(Age >= 0 & Age < 6) | (Age >=18)") &
+                                       age_strata %in% c("Ages 0 - 2 (Infant)",   
+                                                         "Ages 3 - 5 (Preschoolers)",   
+                                                         "Ages 18+ (Young Adult)")~T,    
                                      grp_age_code %in% c("Age >= 0 & Age < 6") & 
-                                       age_strata %in% c("Ages 0 - 2 (Infant)",
-                                                         "Ages 3 - 5 (Preschoolers)")~ T,
+                                       age_strata %in% c("Ages 0 - 2 (Infant)",   
+                                                         "Ages 3 - 5 (Preschoolers)")~ T,   
                                      grp_age_code %in% c("Age >= 2") & 
-                                       age_strata %in% c("Ages 0 - 2 (Infant)")~ T,
-                                     grp_age_code %in% c("Age >= 2")~T,
+                                       age_strata %in% c("Ages 0 - 2 (Infant)")~ T,   
+                                     grp_age_code %in% c("Age >= 2")~T,   
                                      grp_age_code %in% c("Age >= 3") & 
-                                       age_strata %!in% c("Ages 0 - 2 (Infant)")~T,
+                                       age_strata %!in% c("Ages 0 - 2 (Infant)")~T,   
                                      grp_age_code %in% c("Age >= 6") & 
-                                       age_strata %!in% c("Ages 0 - 2 (Infant)",
-                                                          "Ages 3 - 5 (Preschoolers)")~T,
+                                       age_strata %!in% c("Ages 0 - 2 (Infant)",   
+                                                          "Ages 3 - 5 (Preschoolers)")~T,   
                                      grp_age_code %in% c("Age >= 12") & 
-                                       age_strata %in% c("Ages 12 - 17 (Adolescence)",
-                                                         "Ages 18+ (Young Adult)")~T,
-                                     T~F),
+                                       age_strata %in% c("Ages 12 - 17 (Adolescence)",   
+                                                         "Ages 18+ (Young Adult)")~T,   
+                                     T~F),   
            notes=ifelse(grp_age_code %in% c("Age >= 2") & 
-                          age_strata %in% c("Ages 0 - 2 (Infant)"), "Only some participants in this age strata are eligible for this symptom. Consider carefully.", NA)) %>% 
+                          age_strata %in% c("Ages 0 - 2 (Infant)"),    "Only some participants in this age strata are eligible for this symptom. Consider carefully.",    NA)) %>% 
     bind_rows(peds_core_symps %>%
-                filter(grp_age_code %in% "Age >= 0 & Age < 6", final_nm!=lasso_symps) %>% 
-                summarise(.by=c(final_nm, age_code)) %>% 
-                select(lasso_symps=final_nm, grp_age_code=age_code) %>% 
+                filter(grp_age_code %in% "Age >= 0 & Age < 6",    final_nm!=lasso_symps, !grepl("musicul", vr.name)) %>% 
+                summarise(.by=c(final_nm,    age_code)) %>% 
+                select(lasso_symps=final_nm,    grp_age_code=age_code) %>% 
                 crossing(age_strata=levels(wide_df$age_strata)) %>% 
-                mutate(elig_age_strata=case_when(grp_age_code %in% " visit_age >=0 & visit_age <6 "~F,
-                                                 age_strata %in% c("Ages 0 - 2 (Infant)",
-                                                                   "Ages 3 - 5 (Preschoolers)")~F,
+                mutate(elig_age_strata=case_when(grp_age_code %in% " visit_age >=0 & visit_age <6 "~F,   
+                                                 age_strata %in% c("Ages 0 - 2 (Infant)",   
+                                                                   "Ages 3 - 5 (Preschoolers)")~F,   
                                                  T~T))) %>% 
-    mutate(grp_age_code=gsub("visit_age", "Age", grp_age_code))
+    mutate(grp_age_code=gsub("visit_age",    "Age",    grp_age_code))
   
-  return(list(long_df=long_score, wide_df=wide_df, cents=symp_cents, age_symp_key=grp_symp_key))
+  return(list(long_df=long_score,    wide_df=wide_df,    cents=symp_cents,    age_symp_key=grp_symp_key))
 }
 
 all_names_cs <- names(formds_list$covid_symptoms)
@@ -1431,6 +1860,5 @@ lapply(ls(), function(obj){
     qs_save(eval(parse(text = paste0("`", obj, "`"))), file.path(dm_dir, paste0(obj, ".qs2")))
   }
 })
-
 
 

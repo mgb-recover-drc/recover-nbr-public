@@ -281,7 +281,8 @@ qs_read1 <- function(ds, ...){
 get_env_list <- function(coh, dt){
   
   if(missing(coh)) stop("You must provide a cohort name")
-  if(!(coh %in% c("adult", "ped", "cong", "autopsy"))) stop("The first parameter needs to be one of adult, ped, cong, or autopsy")
+  if(coh %in% "cong") coh <- "congenital"
+  if(!(coh %in% c("adult", "ped", "congenital", "autopsy"))) stop("The first parameter needs to be one of adult, ped, congenital, or autopsy")
   dm2_rt_base <- glue("{get_folder_path(fld_str = 'project-files')}/DM")
   dm2_rc_pulls_dir <- list.files(dm2_rt_base, pattern=paste0(coh, "$"), full.names = T)
   if(missing(dt)) dt <- suppressWarnings(max(as.numeric(list.files(dm2_rc_pulls_dir)), na.rm=T))
@@ -510,4 +511,117 @@ add_wbc_fxn <- function(ds){
                        .by=c(record_id, redcap_event_name)) %>% 
                 mutate(across(wbc_val, as.numeric)),
               by=join_by(record_id, redcap_event_name))
+}
+
+mk_vrs_bin <- function(vr,yes_vals, na_vals){
+  bin <- ifelse(vr %in% yes_vals,1,ifelse(vr %in% c(NA, na_vals), NA,0))
+  return(bin)
+}
+
+
+flip_bin <- function(vr){
+  flip <- ifelse(is.na(vr), NA,ifelse(vr==1,0,1) )
+  return(flip)
+  
+}
+
+
+# Represents a dictionary (list of key value pairs) mapping states to geographic
+# regions - 9 total divisions laid out by U.S. Census Bureau 
+# (https://www2.census.gov/geo/pdfs/maps-data/maps/reference/us_regdiv.pdf)
+
+zip_region_fxn <- function(ds, join_vr, db_loc, get_list=F, vr_ext=""){
+  
+  state_to_region_mapping <- c(
+    "CT"=      "Northeast: New England",
+    "ME"=      "Northeast: New England",
+    "MA"=      "Northeast: New England",
+    "NH"=      "Northeast: New England",
+    "RI"=      "Northeast: New England",
+    "VT"=      "Northeast: New England",
+    "NJ"=  "Northeast: Middle Atlantic",
+    "NY"=  "Northeast: Middle Atlantic",
+    "PA"=  "Northeast: Middle Atlantic",
+    "IL"= "Midwest: East North Central",
+    "IN"= "Midwest: East North Central",
+    "MI"= "Midwest: East North Central",
+    "OH"= "Midwest: East North Central",
+    "WI"= "Midwest: East North Central",
+    "IA"= "Midwest: West North Central",
+    "KS"= "Midwest: West North Central",
+    "MN"= "Midwest: West North Central",
+    "MO"= "Midwest: West North Central",
+    "NE"= "Midwest: West North Central",
+    "ND"= "Midwest: West North Central",
+    "SD"= "Midwest: West North Central",
+    "DE"=       "South: South Atlantic",
+    "DC"=       "South: South Atlantic",
+    "FL"=       "South: South Atlantic",
+    "GA"=       "South: South Atlantic",
+    "MD"=       "South: South Atlantic",
+    "NC"=       "South: South Atlantic",
+    "SC"=       "South: South Atlantic",
+    "VA"=       "South: South Atlantic",
+    "WV"=       "South: South Atlantic",
+    "AL"=   "South: East South Central",
+    "KY"=   "South: East South Central",
+    "MS"=   "South: East South Central",
+    "TN"=   "South: East South Central",
+    "AR"=   "South: West South Central",
+    "LA"=   "South: West South Central",
+    "OK"=   "South: West South Central",
+    "TX"=   "South: West South Central",
+    "AZ"=              "West: Mountain",
+    "CO"=              "West: Mountain",
+    "ID"=              "West: Mountain",
+    "MT"=              "West: Mountain",
+    "NV"=              "West: Mountain",
+    "NM"=              "West: Mountain",
+    "UT"=              "West: Mountain",
+    "WY"=              "West: Mountain",
+    "AK"=               "West: Pacific",
+    "CA"=               "West: Pacific",
+    "HI"=               "West: Pacific",
+    "OR"=               "West: Pacific",
+    "WA"=               "West: Pacific"
+  )
+  
+  regions_ordered <- c(unique(state_to_region_mapping), "Other")
+  
+  
+  # read in zip code database file
+  zip_db_loc <- glue("{pf_loc}/zip_code_database.csv")
+  zip_code_ds <- read_csv(zip_db_loc, col_types = readr::cols(world_region = "c")) %>% 
+    mutate(zip = sprintf("%05d", zip))
+  
+  # pre-processing of zip ds for ease of region variable generation
+  zip_code_ds_3dig <- zip_code_ds %>% 
+    mutate(across(zip, ~ substr(.x, 1, 3)))
+  
+  zip_code_ds_fulluniq <- zip_code_ds %>% 
+    bind_rows(zip_code_ds_3dig) %>% 
+    group_by(zip) %>% 
+    summarise(state = paste(unique(state), collapse = "/"))
+  
+  join_vr_list <- "zip"
+  names(join_vr_list) <- join_vr
+  if(get_list) {
+    return(list(state_to_region_mapping=state_to_region_mapping, 
+                regions_ordered=regions_ordered))
+  } else {
+    ds_out <- ds %>% 
+      left_join(zip_code_ds_fulluniq %>% 
+                  select(zip, region_state = state), 
+                by = join_vr_list) %>% 
+      mutate(region = case_when(
+        is.na(region_state) ~ NA, 
+        region_state %in% names(state_to_region_mapping) ~ state_to_region_mapping[region_state], 
+        T ~ "Other"),
+        region_f = factor(region, levels = regions_ordered))
+    
+    ds_out_nms <- c("region", "region_state", "region_f")
+    names(ds_out_nms) <- paste0(ds_out_nms, vr_ext)
+    ds_out %>% 
+      rename(all_of(ds_out_nms))
+  }
 }
