@@ -28,10 +28,10 @@ if(set_resp == "Likely an internal run"){
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
-bargs <- getArgs(defaults = list(dt = "20250906", add_log=0))
+bargs <- getArgs(defaults = list(dt = "20251206", add_log=0))
 
 # check for whether qs2 objects already exist in this project's
-if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/adult/"), bargs$dt))) > 0) 
+if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/adult/"), bargs$dt))) > 0)
   stop(glue("qs2 objects already in existing project - delete qs2 files from project-files/DM/adult/{bargs$dt}"))
 
 # load all relevant RECOVER adult REDCap files 
@@ -71,9 +71,6 @@ event_map_path <- list.files(data_loc, pattern="RECOVER.*_eventmap_.*.csv")
 all_rc_forms_event_map <- read_csv(file.path(data_loc, event_map_path))
 repeat_forms_path <- list.files(data_loc, pattern="RECOVER.*_repeatforms_.*.csv") 
 repeated_rc_forms <- unique(read_csv(file.path(data_loc, repeat_forms_path)) %>% pull(form_name))
-
-mulligan_data_path <- glue("{top_level_data_loc}/RECOVERAdult_BiostatsDerived_{dm_rt_dt}/mulligan_data.csv")
-mull_upload_data <- read_csv(file.path(mulligan_data_path))
 
 # Essential datasets creation (formds_list, core, etc.) ----
 
@@ -282,9 +279,6 @@ core <- core_initial %>%
   left_join(vacc_status %>% select(record_id, vacc_base_f, fvacc_index), by = "record_id") %>%
   left_join(base_visit_ds %>% select(record_id, base_visit_dt), 
             by = "record_id") %>%
-  left_join(mull_upload_data %>% 
-              select(record_id, mull_comb_res = overall_inf_ev), 
-            by = "record_id") %>% 
   mutate(site = substr(record_id, 4, 7)) %>% 
   mutate(# site_curr = coalesce(site_curr_vd, site),  # site_curr_vd uses visit_dag variable, which is not available here
     withdraw_dt_comb = coalesce(withdraw_dt, eop_form_dt), 
@@ -299,9 +293,6 @@ core <- core_initial %>%
                                  T ~ 0),
     infect_yn_anti_f = factor(case_when(move_to_infected == 1 ~ "Infected",
                                         T ~ as.character(infect_yn_f)), levels = c("Infected", "Uninfected")),
-    infect_yn_xanti_f = factor(case_when(mull_comb_res %in% 1 ~ "Infected",
-                                         T ~ as.character(infect_yn_anti_f)), 
-                               levels = c("Infected", "Uninfected")),
     acute_reinf_x = record_id %in% acute_reinf_extra$record_id, 
     enrolled = (cons_yn %in% 1) & !startsWith(site, "S"),
     study_grp = case_when_fcte(
@@ -418,21 +409,46 @@ core <- core_initial %>%
       nhis_lastvisit %in% c(5,6) ~ "Greater than 5 years",
       T ~ as.character(NA)
     ), levels = c("Within the last 5 years", "Greater than 5 years")), 
-    sd_skipcare = case_when(
-      nhis_skipcare == 1 ~ 1,
-      nhis_skipcare %in% c(99, -88) | is.na(nhis_skipcare) ~ as.numeric(NA),
-      nhis_skipcare == 2 ~ 0), 
     sd_food = case_when(
       sdoh_worryfood %in% c(1,2) ~ 1,
       sdoh_lackfood %in% c(1,2) ~ 1,
       sdoh_worryfood == 3 | sdoh_lackfood == 3 ~ 0,
-      T ~ as.numeric(NA))) %>%  
+      T ~ as.numeric(NA)), 
+    # add new SDOH variables identified in adult SDOH paper
+    sd_finhardship = case_when(
+      sdoh_moneyshort %in% c(1, 2) ~ 1,
+      sdoh_moneyshort == 3 ~ 0,
+      T ~ NA_integer_
+    ),
+    sd_foodinsec = case_when(
+      sdoh_worryfood %in% c(1, 2) | sdoh_lackfood %in% c(1, 2) ~ 1,
+      sdoh_worryfood == 3 & sdoh_lackfood == 3 ~ 0,
+      T ~ NA_integer_
+    ),
+    sd_meddis = case_when(
+      discrim_medical == 6 ~ 0,
+      is.na(discrim_medical) | discrim_medical == -88 ~ NA_integer_,
+      T ~ 1
+    ),
+    sd_skipcare = case_when(
+      nhis_skipcare == 1 ~ 1,
+      nhis_skipcare == 2 ~ 0, 
+      T ~ NA_integer_
+    )) %>%  
   which_ms(ms_vrb_name = "race", new_column_name = "race_cat", afmt_list = adult_afmts, labs_rm = "Prefer not to answer") %>% # creates a single select
   which_ms(ms_vrb_name = "race", new_column_name = "race_cat_extra", afmt_list = adult_afmts) %>% 
   which_ms(ms_vrb_name = "race_hisp", new_column_name = "hisp_origin", afmt_list = adult_afmts) %>% 
   which_ms(ms_vrb_name = "spop", new_column_name = "spop", afmt_list = adult_afmts) %>% 
   which_ms(ms_vrb_name = "gender", new_column_name = "gender_cat", afmt_list = adult_afmts) %>% 
   which_ms(ms_vrb_name = "rx_carelevel", new_column_name = "rxcl_auto", afmt_list = adult_afmts)
+
+# add in new enrl_immunophenotype variable from immuno_tmp dataset, if available in 7B
+if (glue("immuno_tmp_{dm_rt_dt}.csv") %in% list.files(glue("{top_level_data_loc}/RECOVERAdult_BiostatsDerived_{dm_rt_dt}/"))) {
+  immun_tmp_data <- read_csv(glue("{top_level_data_loc}/RECOVERAdult_BiostatsDerived_{dm_rt_dt}/immuno_tmp_{dm_rt_dt}.csv"))
+  core <- core %>% 
+    select(-enrl_immunophenotype) %>% 
+    left_join(immun_tmp_data %>% select(record_id, enrl_immunophenotype), by = join_by(record_id))
+}
 
 # core adult dataset to be used in congenital dataset creation script
 parent_first_vacc <- formds_list$vaccine_status %>% 
@@ -1577,4 +1593,3 @@ cat(glue("\n\n\n\n------ Data saved in {dm_dir}
          \n\n"))
 
 closeAllConnections()
-
