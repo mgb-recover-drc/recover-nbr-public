@@ -25,7 +25,7 @@ if(set_resp == "Likely an internal run"){
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
-bargs <- getArgs(defaults = list(dt = "20251206"))
+bargs <- getArgs(defaults = list(dt = "20260306"))
 
 
 # check for whether qs2 objects already exist in this project's
@@ -56,11 +56,24 @@ ds_cg_dd <- read_csv(file.path(data_loc_cg, ds_dd_path_cg)) %>% dd_prep_col_nms(
 
 ds_cg_dd$choices.calculations.or.slider.labels[ds_cg_dd$vr.name == "demo_cgrace"] <- paste(sapply(strsplit(ds_cg_dd$choices.calculations.or.slider.labels[ds_cg_dd$vr.name=="demo_cgrace"], "\\|"),
                                                                                                   function(x) str_replace_all(str_replace_all(x, "<br>.+", ""), "\\[sname\\]", "me")), collapse="|")
+file1 <- file.path(data_loc, "RECOVER_Pediatric_redcap_data.tsv")
+file2 <- file.path(data_loc, "RECOVER_Pediatrics_redcap_data.tsv")
 
-ds_fdata_raw <- read.csv(file.path(data_loc, "RECOVER_Pediatric_redcap_data.tsv"), 
+file_to_read <- if(file.exists(file1)) {
+  file1
+} else if(file.exists(file2)) {
+  file2
+} else {
+  stop("Neither RECOVER_Pediatric_redcap_data.tsv nor RECOVER_Pediatrics_redcap_data.tsv found")
+}
+
+ds_fdata_raw <- read.csv(file_to_read, 
                          colClasses="character", sep = "\t") %>%
   mutate(across(everything(), ~ conv_prop_type(.x, cur_column(), dd = ds_dd))) %>% 
   select(-any_of("redcap_survey_identifier"))
+
+# clean up 
+rm(file1, file2, file_to_read)
 
 ds_cg_fdata_raw <- read.csv(file.path(data_loc_cg, "RECOVER_Caregiver_redcap_data.tsv"), 
                             colClasses="character", sep = "\t") %>%
@@ -877,6 +890,190 @@ sdoh_var_df <- core_base %>%
     health_literacy=coalesce(health_literacyya, health_literacycg)) %>% 
   select(record_id, hh_size, all_of(sdoh_vrs))
 
+# Creation of which_vaccine: peds vaccination variables
+which_vaccine <- core_base %>% 
+  fix_yeardt("fcih") %>%
+  fix_yeardt("mrcih") %>%
+  mutate(across(matches("vacc_dt_\\d"), \(x) as.Date(x))) %>%
+  mutate(across(matches("vacc_dt_\\d"), \(x) case_when(!is.na(x) ~ x), .names = "{col}_imp")) %>%
+  rows_patch(vacc_estdt_wide,
+             by = "record_id") %>%
+  mutate(arm_num = case_when(enrl_arms %in% c("12", "1,2") ~ 2,
+                             enrl_arms %in% c("14", "1,4") ~ 4,
+                             T ~ as.numeric(NA)),
+         acute_yn_f =  factor(arm_num, c(2,4), c("Acute", "Post-Acute")),
+         infect_yn_f = factor(enrl_infyn, 1:0, c("Infected", "Uninfected")),
+         inf_date = case_when(fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
+                              #sometimes people have improbable vlaues for both enrl_inf_dt andd fcih_date
+                              fcih_date %in% NA & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
+                              #fix those w only improbable enrl_inftdr values
+                              fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt %!in% NA & enrl_infdt >= "2020-01-01"~ enrl_infdt,
+                              #many fcih values are very early and unlikely, switching to more likely value.
+                              fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt %in% NA~ as.Date("2020-01-01"),
+                              #IF fcih date is wildly ridiclous but missing enrl_infdt, its 2020-1-1
+                              fcih_date %!in% NA & acute_yn_f == "Post-Acute" ~ fcih_date,
+                              #if 1st inf missing but mrcih exsist then only 1 infection
+                              fcih_date %in% NA & mrcih_date %!in% NA & acute_yn_f == "Acute" ~ mrcih_date,
+                              #if 1st inf not missing then reinfected
+                              fcih_date %!in% NA & acute_yn_f == "Acute" ~ fcih_date,
+                              infect_yn_f == "Infected" ~ enrl_infdt,
+                              T ~ NA),
+         index_date = case_when(infect_yn_f %in% "Uninfected" ~ enrl_dt,
+                                T ~ inf_date),
+         age_enroll = round(as.numeric(enrl_dt - enrl_dob)/365.25, digits = 2),
+         age_ref = case_when(infect_yn_f == "Uninfected" ~ age_enroll,
+                             infect_yn_f == "Infected" ~ round(as.numeric((inf_date - enrl_dob)/ 365.25), 2)),
+         vacc_elig_dt = as.Date(case_when(age_ref >= 0.5 & age_ref < 5 ~ "2022-06-17",
+                                          age_ref < 12 ~ "2021-10-29",
+                                          age_ref < 16 ~"2021-05-10",
+                                          age_ref >= 16 ~ "2020-12-11"))) %>%
+  left_join(formds_list$visit_form %>% 
+              filter(redcap_event_name %in% c("week_8_arm_2","baseline_arm_4")) %>% 
+              select(record_id, bl_visit_dt = visit_dt), 
+            by = "record_id") %>% 
+  mutate(ps_colldt = case_when(ps_colldt %in% NA ~ bl_visit_dt, T ~ ps_colldt)) %>% 
+  select(record_id, index_date, ends_with("_imp"), vacc_elig_dt, ps_colldt) %>% 
+  pivot_longer(!c(record_id, index_date, ps_colldt, vacc_elig_dt, ps_colldt)) %>% 
+  mutate(which_num = parse_number(name)) %>% 
+  mutate(prev_dose=lag(value), .by=c("record_id", "index_date","vacc_elig_dt")) %>%
+  filter(!is.na(value)) %>% 
+  arrange(record_id,value) %>% 
+  mutate(time_since_last = as.Date(value) - as.Date(prev_dose),
+         time_b4_elig = as.Date(value) - as.Date(vacc_elig_dt),
+         prev_year = format(as.Date(prev_dose), "%Y"),
+         fixed_dt = case_when(value >= "2000-01-01" & value <= "2004-12-31" ~ paste(value + years(20)),
+                              value <="2020-11-01" & !is.na(prev_year) ~ glue("{prev_year} - {format(value, '%m-%d')}"), 
+                              T ~ paste(value))) %>% 
+  filter(fixed_dt >= "2020-11-01" & time_b4_elig >= -45) %>% 
+  arrange(record_id, fixed_dt) %>% 
+  mutate(fixed_dt = as.Date(fixed_dt, "%Y-%m-%d"),
+         ind_vax_time = index_date - fixed_dt,
+         vax_out_of_window = ifelse(ind_vax_time > 6*30, 1, 0)) %>% 
+  mutate(all_out_of_window = all(vax_out_of_window == 1), 
+         .by="record_id") %>% 
+  mutate(b4_ind = fixed_dt + days(14) <= index_date,
+         b4_ps_colldt = fixed_dt + days(14) <= ps_colldt & index_date < fixed_dt,
+         vax_after_inf = fixed_dt > index_date,
+         in_window = b4_ind == T & ind_vax_time <= 6*30 & fixed_dt + days(14) <= index_date,
+         b4_inf_but_not_elig = ind_vax_time < 14 & ind_vax_time > 0) %>% 
+  slice(1, .by = c(record_id, index_date, fixed_dt)) %>% 
+  arrange(record_id, fixed_dt) %>% 
+  mutate(last_dose_clean = as.Date(lag(fixed_dt)),
+         time_since_last_clean = as.Date(fixed_dt) - last_dose_clean, 
+         .by=c("record_id")) %>% 
+  filter(is.na(time_since_last_clean) | time_since_last_clean >= 14) %>% 
+  mutate(any_in_window = any(in_window == T),
+         .by=record_id) %>% 
+  mutate(has_vax_extended_wind = ind_vax_time <= 18*30  & ind_vax_time > 6*30,
+         sum_extended_window = sum(as.numeric(has_vax_extended_wind)),
+         sum_in_window = sum(as.numeric(in_window)),
+         sum_b4_inf_lt14d = sum(as.numeric(b4_inf_but_not_elig)),
+         first_vax_dt = first(fixed_dt),
+         most_recent_vax_dt = case_when(any_in_window==T ~ max(fixed_dt[in_window == T]), 
+                                        T~NA),
+         any_b4_inf_not_elig = any(b4_inf_but_not_elig == T),
+         all_b4_inf_not_elig = any(b4_inf_but_not_elig == T),
+         all_post_inf = all(vax_after_inf == T),
+         any_post_inf = any(vax_after_inf == T),
+         any_out_of_window = any(vax_out_of_window == 1),
+         num_vacc_ps = sum(b4_ps_colldt), 
+         .by="record_id") %>% 
+  mutate(tot_pre_inf = ifelse(any_in_window == T, sum_in_window + sum_extended_window + sum_b4_inf_lt14d, 0)) %>% 
+  summarise(.by=c(record_id, index_date, any_in_window,
+                  sum_in_window, sum_extended_window,
+                  most_recent_vax_dt, num_vacc_ps, all_post_inf,
+                  any_post_inf,any_out_of_window, all_out_of_window,tot_pre_inf,
+                  any_out_of_window,all_b4_inf_not_elig,any_b4_inf_not_elig)) %>% 
+  mutate(in_elig_vacc = case_when(all_out_of_window == 1 ~ T,
+                                  all_b4_inf_not_elig == T ~ T,
+                                  any_out_of_window == T & any_post_inf == T & any_in_window != T ~ T,
+                                  any_b4_inf_not_elig == T & any_post_inf == T & any_in_window != T ~ T,
+                                  T ~ F)) %>% 
+  select(-index_date)
+
+
+ped_vacc_var <- core_base %>%
+  fix_yeardt("fcih") %>%
+  fix_yeardt("mrcih") %>%
+  mutate(across(matches("vacc_dt_\\d"), \(x) as.Date(x))) %>%
+  mutate(across(matches("vacc_dt_\\d"), \(x) case_when(!is.na(x) ~ x), .names = "{col}_imp")) %>%
+  rows_patch(vacc_estdt_wide, 
+             by = "record_id") %>%
+  left_join(which_vaccine, by = "record_id") %>%
+  mutate(age_enroll = round(as.numeric(enrl_dt - enrl_dob)/365.25, digits = 2), 
+         arm_num = case_when(enrl_arms %in% c("12", "1,2") ~ 2,
+                             enrl_arms %in% c("14", "1,4") ~ 4,
+                             T ~ as.numeric(NA)), 
+         acute_yn_f =  factor(arm_num, c(2,4), c("Acute", "Post-Acute")),
+         infect_yn_f = factor(enrl_infyn, 1:0, c("Infected", "Uninfected")),
+         inf_date = case_when(fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
+                              #sometimes people have improbable vlaues for both enrl_inf_dt andd fcih_date
+                              fcih_date %in% NA & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
+                              #fix those w only improbable enrl_inftdr values
+                              fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt %!in% NA & enrl_infdt >= "2020-01-01"~ enrl_infdt,
+                              #many fcih values are very early and unlikely, switching to more likely value.
+                              fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt %in% NA~ as.Date("2020-01-01"),
+                              #IF fcih date is wildly ridiclous but missing enrl_infdt, its 2020-1-1
+                              fcih_date %!in% NA & acute_yn_f == "Post-Acute" ~ fcih_date,
+                              #if 1st inf missing but mrcih exsist then only 1 infection
+                              fcih_date %in% NA & mrcih_date %!in% NA & acute_yn_f == "Acute" ~ mrcih_date,
+                              #if 1st inf not missing then reinfected
+                              fcih_date %!in% NA & acute_yn_f == "Acute" ~ fcih_date,
+                              infect_yn_f == "Infected" ~ enrl_infdt,
+                              T ~ NA), 
+         index_date = case_when(infect_yn_f %in% "Uninfected" ~ enrl_dt, 
+                                T ~ inf_date),
+         age_ref = case_when(infect_yn_f == "Uninfected" ~ age_enroll,
+                             infect_yn_f == "Infected" ~ round(as.numeric((inf_date - enrl_dob)/ 365.25), 2)),
+         vacc_elig_dt = as.Date(case_when(age_ref >= 0.5 & age_ref < 5 ~ "2022-06-17",
+                                          age_ref < 12 ~ "2021-10-29",
+                                          age_ref < 16 ~"2021-05-10",
+                                          age_ref >= 16 ~ "2020-12-11")),
+         vacc_elig = case_when(infect_yn_f %in% "Infected" & (index_date - vacc_elig_dt) >= 14 ~ T,
+                               infect_yn_f %in% "Infected" & (index_date - vacc_elig_dt) < 14 ~ F),
+         vacc_2dose = case_when((vacc_type_01 == 3| grepl("Jan+s+en", vacc_typespec_01,
+                                                          ignore.case = TRUE)) ~ F,
+                                (vacc_type_01 %in% c(1:2, 4) |
+                                   grepl("*shield|Nov(a|o)*|Sino|Sanofi", vacc_typespec_01,
+                                         ignore.case = TRUE)) ~ T),
+         vacc_3dose = case_when(vacc_type_01 == 2 & ((vacc_dt_01_imp - enrl_dob)/ 365.25) >= 0.5 & ((vacc_dt_01_imp - enrl_dob)/ 365.25) < 5 ~ T,
+                                grepl("Anhui", vacc_typespec_01, ignore.case = T) ~ T,
+                                T ~ F),
+         vacc_dt_comp = case_when(vacc_2dose == F ~ vacc_dt_01_imp,
+                                  vacc_2dose == T & vacc_3dose == F ~ vacc_dt_02_imp,
+                                  vacc_2dose == T & vacc_3dose == T ~ vacc_dt_03_imp),
+         vacc_ncomp = case_when(vacc_2dose == F ~ 1,
+                                vacc_2dose == T & vacc_3dose == F ~ 2,
+                                vacc_2dose == T & vacc_3dose == T ~ 3), 
+         vacc_enrl_status = case_when(vacc_elig == F ~ "Not eligible for vaccination",
+                                      (vacc_yn == 0) ~ "Not vaccinated",
+                                      index_date - vacc_dt_comp >= 14 ~ "Fully vaccinated",
+                                      ((index_date - vacc_dt_comp) < 14) & ((index_date - vacc_dt_comp) >=0) ~ "Partially vaccinated",
+                                      vacc_ncomp == 1 & (index_date - vacc_dt_comp) < 0 ~ "Not vaccinated",
+                                      vacc_ncomp > 1 & (index_date - vacc_dt_comp) < 0 ~ "Partially vaccinated",
+                                      index_date - vacc_dt_01_imp < 0 ~"Not vaccinated",
+                                      vacc_ncomp <= vacc_num & is.na(vacc_dt_comp) ~ "Vaccinated but missing information",
+                                      (vacc_ncomp > vacc_num) & (index_date - vacc_dt_01_imp) < 0 ~"Not vaccinated",
+                                      (vacc_ncomp > vacc_num) &  (index_date - vacc_dt_01_imp) > 0 ~ "Partially vaccinated",
+                                      vacc_ncomp == 2 & (vacc_ncomp > vacc_num) &  is.na(vacc_dt_01_imp) ~ "Vaccinated but missing information",
+                                      vacc_ncomp == 3 & (vacc_ncomp > vacc_num) &  is.na(vacc_dt_02_imp) ~ "Vaccinated but missing information",
+                                      is.na(vacc_num)| is.na(vacc_type_01) & vacc_yn == 1 ~ "Vaccinated but missing information",
+                                      (is.na(vacc_2dose)) & vacc_yn == 1 ~ "Vaccinated but missing information",
+                                      vacc_yn == 1 & is.na(vacc_ncomp) ~ "Vaccinated but missing information",
+                                      vacc_yn == 1 & is.na(index_date) ~ "Vaccinated but missing information",
+                                      vacc_yn < 0 ~ "Unknown",
+                                      is.na(vacc_yn) ~ "Unknown")) %>%
+  mutate(vacc_6m_index = case_when(in_elig_vacc == T ~ "Not vaccinated at index",
+                                   !is.na(most_recent_vax_dt) ~"1+ dose at least 6 months before 1st infection",
+                                   all_post_inf == T ~ "Not vaccinated at index",
+                                   # vacc_enrl_status %in% c("Not eligible for vaccination") & (vacc_dt_01_imp > index_date | is.na(vacc_dt_01_imp))~"Not vaccinated at index",
+                                   vacc_enrl_status %in% c("Not vaccinated")~"Not vaccinated at index",
+                                   #vacc_enrl_status %in% "Vaccinated but missing information"~NA
+  ))
+
+
+
+
 # add additional variables to core
 core <- core_base %>%
   left_join(peds_baseline_any_ds, by = "record_id") %>% 
@@ -1076,7 +1273,15 @@ core <- core_base %>%
                                          t1_symp_form_comp & ptf_acute==1~1),
          promotion_weights=1/promotion_probability,
          addr_zipya5 = substr(addr_zipya, 1, 5)) %>%
-  left_join(sdoh_var_df, by="record_id") 
+  left_join(sdoh_var_df, by="record_id") %>%
+  left_join(ped_vacc_var %>% 
+              select(record_id, vacc_6m_index), 
+            by = "record_id") %>%
+  mutate(infect_anti_f = case_when(infect_yn_f == "Infected" ~ "Infected", 
+                                   infect_yn_f == "Uninfected" & ptf_infected == 1 ~ "Infected", 
+                                   infect_yn_f == "Uninfected" & ab_pos == 1 ~ "Infected", 
+                                   infect_yn_f == "Uninfected" & (ccih_covidyn == 1 | fcih_covidyn == 1 | mrcih_covidyn == 1)  ~ "Infected", 
+                                   TRUE ~ "Uninfected"))
 
 if (file.exists(zip_code_db_dir)) {
   core <- core %>%
