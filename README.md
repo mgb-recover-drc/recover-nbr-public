@@ -1,10 +1,31 @@
 # recover-nbr-public: Public code repository for the Network of Biostatisticians for RECOVER
 
+Please visit the NBR website (https://www.recover-nbr.org/) for detailed code documentation and more information on the RECOVER study and data.
+
 # Manuscript code
 Code used for some RECOVER manuscript analyses will be made available in a "manuscripts" folder within each cohort directory. This code will not necessarily run directly from the data available on Seven Bridges, but can be used as a reference.
 
 # Code updates 
 This code base is typically updated every three months, following a data release on Seven Bridges. Major changes from each update are described in this README.
+
+## April 23, 2026
+
+Files updated:	
+1. main_adult_datasets_setup.R
+2. main_pediatric_datasets_setup.R
+3. main_congenital_datasets_setup.R
+
+### Updates to main_adult_datasets_setup.R:
+* Several new SDOH -related variables added to core, namely: rand_raw, rand_scale, rand_cutoff, sd_socialsupp, and sd_educ
+
+### Updates to main_pediatric_datasets_setup.R:
+* Two new variables – vacc_6m_index and infect_anti_f were added to core
+  * Datasets called which_vaccine and ped_vacc_var were created in order to define variables required to create the variable vacc_6m_index
+
+### Updates to main_pediatric_datasets_setup.R:
+* Two new variables – gea_inf and trimester were added to core
+  * Several small datasets were created in order to defined variables required to create these new variables 
+
 
 ## February 3, 2026
 
