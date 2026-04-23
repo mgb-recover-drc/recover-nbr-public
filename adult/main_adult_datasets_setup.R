@@ -28,7 +28,7 @@ if(set_resp == "Likely an internal run"){
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
-bargs <- getArgs(defaults = list(dt = "20251206", add_log=0))
+bargs <- getArgs(defaults = list(dt = "20260306", add_log=0))
 
 # check for whether qs2 objects already exist in this project's
 if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/adult/"), bargs$dt))) > 0)
@@ -435,6 +435,20 @@ core <- core_initial %>%
       nhis_skipcare == 2 ~ 0, 
       T ~ NA_integer_
     )) %>%  
+  mutate(across(starts_with("sdohss_"), ~ case_when(.x == -88 ~ NA, 
+                                                    T ~ .x), 
+                .names = "{.col}_rec")) %>%
+  mutate(rand_raw = sdohss_bed_rec + sdohss_chores_rec + sdohss_doctor_rec + 
+           sdohss_goodtime_rec + sdohss_lovewant_rec + sdohss_meals_rec + 
+           sdohss_suggestions_rec + sdohss_understand_rec,
+         rand_scale = ((rand_raw - 8) / (40 - 8)) * 100, 
+         rand_cutoff = quantile(rand_scale, 0.25, na.rm = T)) %>%
+  mutate(sd_socialsupp = case_when(rand_scale <= rand_cutoff ~ 1, 
+                                   is.na(rand_scale) ~ NA, 
+                                   T ~ 0), 
+         sd_educ = case_when(education %in% c(0, 1, 2, 3, 4, 5) ~ 1, 
+                             education == -88 | is.na(education) ~ NA,
+                             education %in% c(6, 7) ~ 0)) %>% 
   which_ms(ms_vrb_name = "race", new_column_name = "race_cat", afmt_list = adult_afmts, labs_rm = "Prefer not to answer") %>% # creates a single select
   which_ms(ms_vrb_name = "race", new_column_name = "race_cat_extra", afmt_list = adult_afmts) %>% 
   which_ms(ms_vrb_name = "race_hisp", new_column_name = "hisp_origin", afmt_list = adult_afmts) %>% 

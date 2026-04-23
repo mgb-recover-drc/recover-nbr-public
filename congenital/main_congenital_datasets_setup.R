@@ -25,10 +25,10 @@ if(set_resp == "Likely an internal run"){
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
 
-bargs <- getArgs(defaults = list(dt = "20250906"))
+bargs <- getArgs(defaults = list(dt = "20260306"))
 
 # check for whether qs2 objects already exist in this project's
-if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/congenital/"), bargs$dt))) > 0) 
+if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/congenital/"), bargs$dt))) > 0)
   stop(glue("qs2 objects already in existing project - delete qs2 files from project-files/DM/congenital/{bargs$dt}"))
 
 # load all relevant RECOVER congenital REDCap files  
@@ -37,9 +37,11 @@ dm_rt_dt_y <- substr(dm_rt_dt, 1, 4)
 dm_rt_dt_m <- substr(dm_rt_dt, 5, 6)
 
 pf_loc <- get_folder_path(fld_str = "project-files") # project-files folder location (for current Seven Bridges environment)
-data_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricCongenital_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVREPediatricCongenital_REDCap_{dm_rt_dt}")
+data_folder_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricCongenital_{dm_rt_dt_y}{dm_rt_dt_m}.1")
+lowest_foldr_nm <- grep("PediatricCongenital_REDCap_", list.files(data_folder_loc), value = T)
+data_loc <- glue("{data_folder_loc}/{lowest_foldr_nm}/")
 
-ds_dd_path <- list.files(data_loc, pattern = "RECOVER.*_DataDictionary_.*.csv")
+ds_dd_path <- list.files(data_loc, pattern = "RECOVERCong_DataDictionary_.*\\.csv")
 ds_dd <- read_csv(file.path(data_loc, ds_dd_path)) %>% dd_prep_col_nms()
 ds_dd$choices.calculations.or.slider.labels[ds_dd$vr.name=="demo_race"] <- paste(sapply(strsplit(ds_dd$choices.calculations.or.slider.labels[ds_dd$vr.name=="demo_race"], "\\|"),
                                                                                         function(x) str_replace_all(str_replace_all(x, "<br>.+", ""), "\\[sname\\]", "me")), collapse="|")
@@ -61,6 +63,8 @@ id_vrs <- c("record_id", "redcap_event_name", "redcap_repeat_instrument", "redca
 # bring in the core dataset from the adult data
 adult_env_list <- get_env_list("adult")
 core_adult_full <- adult_env_list$core_adult_full()
+adult_formds_list_pregnancy <- adult_env_list$formds_list_pregnancy_rdsfxnobjhlpr()
+adult_formds_list_pregnancy_followup <- adult_env_list$formds_list_pregnancy_followup_rdsfxnobjhlpr()
 
 # formds_list: a list of datasets where each one corresponds to all the data in REDCap for a specific form (across all instances)
 formds_list <- get_cur_form_ds(ds_fdata, ds_dd, all_rc_forms_event_map)
@@ -143,8 +147,60 @@ core <- core_initial %>%
          pvacc_at_preg = factor(parent_first_vacc_dt < demo_dob, c(T, F), c("Yes", "No")),
          pvacc_at_pregd = fact_fact01n(pvacc_at_preg, "Yes", "Parent Vaccinated"),
          days_pinf_dob = as.numeric(demo_dob - parent_infdt),
-         days_pinf_dob_cut = cut(days_pinf_dob/30.4, seq(0, 48), include.lowest = T)
-  )
+         days_pinf_dob_cut = cut(days_pinf_dob/30.4, seq(0, 48), include.lowest = T))
+
+# gea_inf and trimester at infection variables code --
+preg <- adult_formds_list_pregnancy %>%
+  left_join(core_adult_full %>% select(record_id = enrl_cgid, index_dt = parent_infdt), by = "record_id") %>%
+  relocate(record_id, redcap_event_name, index_dt)
+
+# Clean pregnancy followup forms by combining pregfu_yn (ver1) and pregfu_now (ver2) into pregfu_yn_now
+preg_fu <- adult_formds_list_pregnancy_followup %>% 
+  filter(!is.na(pregfu_colldt)) %>%
+  mutate(pregfu_yn_now = case_when(pregfu_fversion %in% c(1) ~ pregfu_yn, T ~ pregfu_now))
+
+# For those still pregnant or missing preg_covidres at baseline, find their live birth (corresponding to pregnancy at index infection) in follow-up forms
+preg_needfu <- preg %>% 
+  filter(is.na(preg_covidres) | preg_covidres %in% c(7, -88)) %>%
+  left_join(preg_fu %>% select(-redcap_repeat_instrument, -redcap_repeat_instance) %>%
+              rename(pregfu_redcap_event_name = redcap_event_name), by = "record_id") %>%
+  filter(pregfu_res %in% c(6)) %>%
+  mutate(pregfu_due_minus_index = as.numeric(difftime(pregfu_due, index_dt, unit = "days")),
+         pregfu_dob_minus_index = as.numeric(difftime(pregfu_dob, index_dt, unit = "days")))
+
+preg_needfu <- preg_needfu %>% 
+  group_by(record_id) %>% 
+  slice_min(pregfu_redcap_event_name) %>% ungroup() %>%
+  filter(is.na(pregfu_dob) | (pregfu_dob_minus_index>=0 & pregfu_dob_minus_index<=42*7))
+
+# Concatenate baseline and followup forms together to get pregnancy timing information
+
+preg_timing_cor <- preg %>% 
+  filter(!record_id %in% preg_needfu$record_id) %>%
+  select(record_id, redcap_event_name, index_dt, preg_colldt, preg_covid, preg_covidres, preg_coviddue, preg_coviddob) %>%
+  rename(res = preg_covidres, due = preg_coviddue, dob = preg_coviddob) %>%
+  mutate(from_baseline = TRUE) %>%
+  rbind(preg %>% filter(record_id %in% preg_needfu$record_id) %>% select(-redcap_event_name) %>%
+          left_join(preg_needfu %>% select(record_id, pregfu_redcap_event_name, starts_with("pregfu_")) %>%
+                      rename(redcap_event_name = pregfu_redcap_event_name), by = "record_id") %>%
+          select(record_id, redcap_event_name, index_dt, preg_colldt, preg_covid, pregfu_res, pregfu_due, pregfu_dob)  %>%
+          rename(res = pregfu_res, due = pregfu_due, dob = pregfu_dob) %>%
+          mutate(from_baseline = FALSE)) %>% 
+  left_join(core %>% select(record_id = enrl_cgid, cong_id=record_id,  enrl_dob, study_grp),by="record_id") %>%
+  # left_join(core_adult_full %>% select(record_id = enrl_cgid, infect_yn),by="record_id") %>%
+  mutate(lmp = due - days(40*7),
+         lmp_inf = due - days(40*7),
+         gea = as.numeric(difftime(enrl_dob, lmp, units = "weeks")),
+         gea_inf = as.numeric(difftime(index_dt, lmp_inf, units = "days")),
+         trimester = factor(case_when((gea_inf < 0) | (gea_inf > 42*7) ~ "Undefined",
+                                      (gea_inf >= 0) & (gea_inf <= 13*7 + 6) ~ "First Trimester", 
+                                      (gea_inf >= 14*7) & (gea_inf <= 27*7 + 6) ~ "Second Trimester", 
+                                      (gea_inf >= 28*7) & (gea_inf <= 42*7) ~ "Third Trimester", 
+                                      T ~ NA_character_), levels = c("First Trimester", "Second Trimester", "Third Trimester", "Undefined")))
+
+core <- core %>% 
+  left_join(preg_timing_cor %>% select(cong_id, gea_inf, trimester), 
+            by = join_by(record_id == cong_id))
 
 # Saving .qs2 objects for everything created here
 dm_dir <- glue("{get_folder_path(fld_str='output-files')}/DM/congenital/{dm_rt_dt}")
@@ -161,5 +217,4 @@ lapply(ls(), function(obj){
     qs_save(eval(parse(text = paste0("`", obj, "`"))), file.path(dm_dir, paste0(obj, ".qs2")))
   }
 })
-
 
