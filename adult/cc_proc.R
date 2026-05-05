@@ -389,7 +389,6 @@ for (i in 1:nrow(symcc_oldmatch)) {
     spec_miss
   )
   
-  print(i)
 }
 
 # group symptoms by cc group
@@ -828,7 +827,7 @@ for (i in 1:length(groupcc_newname)) {
     paste0("cc2_", groupcc_newname[i], "_mindt"),
     paste0("cc2_", groupcc_newname[i], "_curvisit")
   )
-  print(i)
+  
 }
 # adding type I diabetes to autoimmune disease group, rename t2diabetes to diabetes
 comorb_new_touse[, `:=`(
@@ -847,8 +846,13 @@ comorb_new_touse[, `:=`(
 # 4.  Combine the two forms ====
 # create NA cols for cc groups only on new form
 final_group_cc_name <- union(final_group_cc_oldname, final_group_cc_newname)
-final_group_newonly <- final_group_cc_newname[!final_group_cc_newname %in% final_group_cc_oldname]
+final_group_newonly <- final_group_cc_newname[(!final_group_cc_newname %in% final_group_cc_oldname) & (final_group_cc_newname != "autoimm_no")]
 comorb_old_touse[, c(paste0("cc_old_", final_group_newonly, "_b4index"), paste0("cc_old_", final_group_newonly, "_b4now")) := NA_real_]
+comorb_old_touse[, `:=`(
+  "cc_old_autoimm_no_b4index" = comorb_old_touse$cc_old_autoimm_b4index,
+  "cc_old_autoimm_no_b4now" = comorb_old_touse$cc_old_autoimm_b4now
+)]
+
 # - prioritize Old form
 # - prioritize New Form
 # - Either old or new
