@@ -28,7 +28,7 @@ if(set_resp == "Likely an internal run"){
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
-bargs <- getArgs(defaults = list(dt = "20260306", add_log=0))
+bargs <- getArgs(defaults = list(dt = "20260606", add_log=0))
 
 # check for whether qs2 objects already exist in this project's
 if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/adult/"), bargs$dt))) > 0)
@@ -475,6 +475,7 @@ parent_first_vacc <- formds_list$vaccine_status %>%
 core_adult_full <- core %>% 
   select(enrl_cgid = record_id,
          race_unique_an, 
+         infect_yn,
          parent_infdt = index_dt) %>% 
   mutate(has_parent = T) %>% 
   left_join(parent_first_vacc, by = c(enrl_cgid = "record_id"))
@@ -1607,3 +1608,4 @@ cat(glue("\n\n\n\n------ Data saved in {dm_dir}
          \n\n"))
 
 closeAllConnections()
+

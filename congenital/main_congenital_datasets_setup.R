@@ -25,7 +25,7 @@ if(set_resp == "Likely an internal run"){
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
 
-bargs <- getArgs(defaults = list(dt = "20260306"))
+bargs <- getArgs(defaults = list(dt = "20260606"))
 
 # check for whether qs2 objects already exist in this project's
 if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/congenital/"), bargs$dt))) > 0)
@@ -65,6 +65,7 @@ adult_env_list <- get_env_list("adult")
 core_adult_full <- adult_env_list$core_adult_full()
 adult_formds_list_pregnancy <- adult_env_list$formds_list_pregnancy_rdsfxnobjhlpr()
 adult_formds_list_pregnancy_followup <- adult_env_list$formds_list_pregnancy_followup_rdsfxnobjhlpr()
+adult_formds_list_adult_delivery_and_outcome_form <- adult_env_list$formds_list_adult_delivery_and_outcome_form_rdsfxnobjhlpr()
 
 # formds_list: a list of datasets where each one corresponds to all the data in REDCap for a specific form (across all instances)
 formds_list <- get_cur_form_ds(ds_fdata, ds_dd, all_rc_forms_event_map)
@@ -174,6 +175,9 @@ preg_needfu <- preg_needfu %>%
   filter(is.na(pregfu_dob) | (pregfu_dob_minus_index>=0 & pregfu_dob_minus_index<=42*7))
 
 # Concatenate baseline and followup forms together to get pregnancy timing information
+ado_dates <- adult_formds_list_adult_delivery_and_outcome_form %>%
+  select(record_id, ado_estimateddt) %>%
+  mutate(ado_estimateddt = as.Date(ado_estimateddt))
 
 preg_timing_cor <- preg %>% 
   filter(!record_id %in% preg_needfu$record_id) %>%
@@ -187,19 +191,46 @@ preg_timing_cor <- preg %>%
           rename(res = pregfu_res, due = pregfu_due, dob = pregfu_dob) %>%
           mutate(from_baseline = FALSE)) %>% 
   left_join(core %>% select(record_id = enrl_cgid, cong_id=record_id,  enrl_dob, study_grp),by="record_id") %>%
-  # left_join(core_adult_full %>% select(record_id = enrl_cgid, infect_yn),by="record_id") %>%
-  mutate(lmp = due - days(40*7),
-         lmp_inf = due - days(40*7),
-         gea = as.numeric(difftime(enrl_dob, lmp, units = "weeks")),
-         gea_inf = as.numeric(difftime(index_dt, lmp_inf, units = "days")),
-         trimester = factor(case_when((gea_inf < 0) | (gea_inf > 42*7) ~ "Undefined",
-                                      (gea_inf >= 0) & (gea_inf <= 13*7 + 6) ~ "First Trimester", 
-                                      (gea_inf >= 14*7) & (gea_inf <= 27*7 + 6) ~ "Second Trimester", 
-                                      (gea_inf >= 28*7) & (gea_inf <= 42*7) ~ "Third Trimester", 
-                                      T ~ NA_character_), levels = c("First Trimester", "Second Trimester", "Third Trimester", "Undefined")))
+  left_join(core_adult_full %>% select(record_id = enrl_cgid, infect_yn),by="record_id") %>%
+  left_join(ado_dates, by = "record_id") %>%
+  mutate(
+    due = as.Date(due),
+    ado_estimateddt = as.Date(ado_estimateddt),
+    enrl_dob = as.Date(enrl_dob),
+    index_dt = as.Date(index_dt),
+    diff_orig = abs(as.numeric(difftime(enrl_dob, due, units = "days"))),
+    diff_ado = abs(as.numeric(difftime(enrl_dob, ado_estimateddt, units = "days"))),
+    optimal_due = case_when(
+      is.na(due) & is.na(ado_estimateddt) ~ as.Date(NA),
+      is.na(due) & !is.na(ado_estimateddt) ~ ado_estimateddt,
+      !is.na(due) & is.na(ado_estimateddt) ~ due,
+      diff_orig <= diff_ado ~ due,
+      diff_ado < diff_orig ~ ado_estimateddt
+    ),
+    lmp = optimal_due - days(40 * 7),
+    gea_inf = as.numeric(difftime(index_dt, lmp, units = "days")),
+    trimester = factor(
+      case_when(
+        is.na(gea_inf) ~ NA_character_,
+        (gea_inf < 0) | (gea_inf > 42 * 7) ~ "Undefined",
+        (gea_inf >= 0) & (gea_inf <= 13 * 7 + 6) ~ "First Trimester",
+        (gea_inf >= 14 * 7) & (gea_inf <= 27 * 7 + 6) ~ "Second Trimester",
+        (gea_inf >= 28 * 7) & (gea_inf <= 42 * 7) ~ "Third Trimester",
+        TRUE ~ NA_character_
+      ),
+      levels = c("First Trimester", "Second Trimester", "Third Trimester", "Undefined")
+    ),
+    trimester_inf = factor(case_when(
+      study_grp == "Not Congenitally Exposed" ~ "Unexposed",
+      study_grp == "Congenitally Exposed" & infect_yn == 0 ~ as.character(NA),
+      trimester == "First Trimester" ~ "First Trimester",
+      trimester == "Second Trimester" ~ "Second Trimester",
+      trimester == "Third Trimester" ~ "Third Trimester"),
+      levels = c("Unexposed","First Trimester","Second Trimester","Third Trimester"))
+  )
 
 core <- core %>% 
-  left_join(preg_timing_cor %>% select(cong_id, gea_inf, trimester), 
+  left_join(preg_timing_cor %>% select(cong_id, gea_inf, trimester = trimester_inf), 
             by = join_by(record_id == cong_id))
 
 # Saving .qs2 objects for everything created here
