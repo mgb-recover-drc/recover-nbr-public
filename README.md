@@ -8,6 +8,32 @@ Code used for some RECOVER manuscript analyses will be made available in a "manu
 # Code updates 
 This code base is typically updated every three months, following a data release on Seven Bridges. Major changes from each update are described in this README.
 
+## June 6, 2026
+
+Files updated:	
+1. main_adult_datasets_setup.R
+2. main_pediatric_datasets_setup.R
+3. main_congenital_datasets_setup.R
+4. helper_script.R
+
+### Updates to main_adult_datasets_setup.R:
+* Version of adult core available to the congenital script updated to include infect_yn
+
+### Updates to main_pediatric_datasets_setup.R:
+* Special Health Care Needs Form dataset, shcn_form, added to code
+  * Object called diag added in order to create shcn_form
+
+### Updates to main_congenital_datasets_setup.R:
+* New dataset ado_dates added and used in the process of updating the following variables in core: gea_inf and trimester
+  * An "Unexposed" level has been added to the trimester variable. In the previous trimester version, the unexposed had a trimester at index so this update explicitly categorizes them.
+  * An additional source of due date has been incorporated, resulting in fewer missing trimester values
+* Definition of the dataset preg_timing_cor was also updated and utilized in the core variables update
+
+### Updates to helper_script.R
+* Definitions were updated for the following functions: mk_labs_comb_long and piv_lab_form
+* The new function piv_lab_formq was added
+
+
 ## April 23, 2026
 
 Files updated:	
