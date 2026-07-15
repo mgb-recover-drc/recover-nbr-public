@@ -393,16 +393,9 @@ getArgs <- function(verbose = FALSE, defaults = NULL) {
 }
 
 mk_labs_comb_long <- function() {
-  
   # This is only a function to avoid saving interim datasets. Could also do this with rm statements
-  clab_long <- formds_list$clinical_labs %>% 
-    select(-any_of(c('redcap_repeat_instrument', 'redcap_repeat_instance', 'form', 'clab_biosex', 'clab_fversion', 'clab_fqueries', 'clinical_labs_complete'))) %>% 
-    mutate(across(everything(), as.character)) %>% 
-    pivot_longer(cols=-c(record_id, redcap_event_name),
-                 names_to = "clab_nm", 
-                 values_to = "clab_val") %>% 
-    mutate(lab_nm = gsub("^c", "", clab_nm)) %>% 
-    filter(!is.na(clab_val) & !(grepl("nn___1$", lab_nm) & clab_val == 0)) %>% 
+  
+  clab_long <- piv_lab_formq(formds_list$clinical_labs, "clab", "clinical_labs_complete") %>% 
     left_join(lab_unit_info, by=join_by(clab_nm == vr.name))
   
   ds_dts <- clab_long %>% 
@@ -410,24 +403,61 @@ mk_labs_comb_long <- function() {
                by=join_by(clab_nm==date)) %>% 
     select(record_id, redcap_event_name, panel, clab_dt=clab_val)
   
-  rlab_long <- formds_list$research_labs %>% 
-    select(-any_of(c('redcap_repeat_instrument', 'redcap_repeat_instance', 'form', 'rlab_biosex', 'rlab_fversion', 'rlab_fqueries', 'research_labs_complete'))) %>% 
-    mutate(across(everything(), as.character)) %>% 
-    pivot_longer(cols=-c(record_id, redcap_event_name, rlab_dt),
-                 names_to = "rlab_nm", 
-                 values_to = "rlab_val") %>% 
-    mutate(lab_nm = gsub("^r", "", rlab_nm)) %>% 
-    filter(!is.na(rlab_val) & !(grepl("nn___1$", lab_nm) & rlab_val == 0)) %>% 
+  rlab_long <- piv_lab_formq(formds_list$research_labs, "rlab", "research_labs_complete", extra_piv_vrs = "rlab_dt") %>% 
     left_join(lab_unit_info, by=join_by(rlab_nm == vr.name))
   
-  labs_comb_long_nowbc <- clab_long %>%
+  nnv_fxn <- function(ds){
+    ds_start <- ds %>% 
+      select(record_id, redcap_event_name, ends_with("nnv")) %>% 
+      pivot_longer(cols=-c(record_id, redcap_event_name),
+                   names_to="plab_nm") %>% 
+      filter(!is.na(value)) 
+    
+    ds_options <- ds %>% 
+      select(record_id, redcap_event_name, matches("___[a-z]"))
+    if(ncol(ds_options) > 2) {
+      ds_out <- ds_start %>% 
+        full_join(ds_options %>% 
+                    select(record_id, redcap_event_name, matches("___[a-z]")) %>% 
+                    pivot_longer(cols=-c(record_id, redcap_event_name)) %>% 
+                    filter(value %in% 1) %>% 
+                    mutate(val_txt = paste("std_ms -", gsub(".+___", "", name)),
+                           plab_nm = gsub("___.+", "v", name)) %>% 
+                    select(-value),
+                  by = join_by(record_id, redcap_event_name, plab_nm)) %>% 
+        mutate(lab_val = coalesce(val_txt, value),
+               lab_nm= substring(plab_nm, 2)) %>%
+        select(record_id, redcap_event_name, lab_nm, lab_val)
+    } else {
+      ds_out <- ds_start %>% 
+        rename(lab_val = value) %>% 
+        mutate(lab_nm= substring(plab_nm, 2)) %>%
+        select(record_id, redcap_event_name, lab_nm, lab_val)
+    }
+    ds_out
+  }
+  
+  clab_nnv <- nnv_fxn(formds_list$clinical_labs)
+  rlab_nnv <- nnv_fxn(formds_list$research_labs) %>% 
+    left_join(formds_list$research_labs %>% 
+                select(record_id, redcap_event_name, rlab_dt),
+              by = join_by(record_id, redcap_event_name))
+  
+  ds_out <- clab_long %>%
     select(-unit_note) %>% 
-    filter(clab_nm %!in% lab_dates$date) %>%
+    filter(clab_nm %!in% gsub(" .+" , "", lab_dates$date)) %>%
     full_join(rlab_long,
               by = join_by(record_id, redcap_event_name, lab_nm)) %>%
+    mutate(across(rlab_dt, as.Date)) %>% 
+    bind_rows(clab_nnv %>% 
+                rename(clab_val= lab_val) %>% 
+                full_join(rlab_nnv %>% 
+                            rename(rlab_val = lab_val),
+                          by = join_by(record_id, redcap_event_name, lab_nm))) %>% 
     left_join(lab_panels,
               by = join_by(lab_nm)) %>%
-    left_join(ds_dts,
+    left_join(ds_dts %>% 
+                mutate(across(clab_dt, as.Date)),
               by = join_by(record_id, redcap_event_name, panel)) %>%
     left_join(formds_list$visit_form %>%
                 select(record_id, redcap_event_name, visit_dt),
@@ -435,28 +465,16 @@ mk_labs_comb_long <- function() {
     mutate(src = ifelse(any(!is.na(rlab_val[!grepl("___\\d", lab_nm)])), "research", "clinical"),
            .by=c(record_id, redcap_event_name, panel)) %>%
     mutate(lab_val = ifelse(src %in% "research", rlab_val, clab_val),
-           lab_dt = ifelse(src %in% 'research', coalesce(rlab_dt, format(visit_dt, "%Y-%m-%d")), clab_dt)) %>%
+           lab_dt = if_else(src %in% 'research', coalesce(rlab_dt, visit_dt), clab_dt)) %>%
     select(-c(clab_nm, rlab_nm, visit_dt)) %>%
     filter(!is.na(lab_val)) %>%
     arrange(record_id, redcap_event_name, lab_nm) %>%
     left_join(conv,
-              by = join_by(lab_nm))
-  
-  labs_wbc = labs_comb_long_nowbc %>% 
-    filter(lab_nm == "lab_wbc") %>% 
-    select(record_id, redcap_event_name, wbc_val = lab_val) %>% 
-    filter(row_number() == 1, 
-           .by=c(record_id, redcap_event_name)) %>% 
-    mutate(across(wbc_val, as.numeric))
-  
-  ds_out <- labs_comb_long_nowbc %>% 
-    left_join(labs_wbc, 
-              by = join_by(record_id, redcap_event_name)) %>% 
+              by = join_by(lab_nm)) %>% 
+    add_wbc_fxn() %>% 
     mutate(cf_num = case_when(grepl("wbc_val", conversionfactor) ~ 100/wbc_val,
                               .default = as.numeric(conversionfactor)))
-  
   ds_out
-  
 }
 
 this_year = lubridate::year(Sys.Date())
@@ -486,6 +504,7 @@ fix_yeardt <- function(ds, vr_pf){
 }
 
 piv_lab_form <- function(ds, prefix, comp_vr, prefix_gen= "lab", extra_piv_vrs=NULL){
+  
   ds %>% 
     select(-any_of(c('redcap_repeat_instrument', 'redcap_repeat_instance', 'form', paste0(prefix, c('_biosex', '_fversion', '_fqueries')), comp_vr))) %>% 
     mutate(across(everything(), as.character)) %>% 
@@ -493,9 +512,27 @@ piv_lab_form <- function(ds, prefix, comp_vr, prefix_gen= "lab", extra_piv_vrs=N
                  names_to = paste0(prefix, "_nm"), 
                  values_to = paste0(prefix, "_val")) %>% 
     filter(!is.na(!!sym(paste0(prefix, "_val")))) %>% 
-    mutate(lab_nm = gsub(paste0("^", prefix), prefix_gen, !!sym(paste0(prefix, "_nm")))) %>% 
-    filter(!(grepl("nn___1$", lab_nm) & !!sym(paste0(prefix, "_val")) == 0))
+    mutate(lab_nm = sub(paste0("^", prefix), prefix_gen, !!sym(paste0(prefix, "_nm")), perl = TRUE)) %>% 
+    filter(!(endsWith(lab_nm, "nn___1$") & !!sym(paste0(prefix, "_val")) == 0))
+  
 }
+
+
+piv_lab_formq <- function(ds, prefix, comp_vr, prefix_gen= "lab", extra_piv_vrs=NULL){
+  ds %>% 
+    select(-any_of(c('redcap_repeat_instrument', 'redcap_repeat_instance', 'form', paste0(prefix, c('_biosex', '_fversion', '_fqueries')), comp_vr))) %>% 
+    select(-matches("___"), -ends_with("nnv")) %>% 
+    mutate(across(everything(), as.character)) %>% 
+    pivot_longer(cols=-all_of(c('record_id', 'redcap_event_name', extra_piv_vrs)),
+                 names_to = "nm_vr", 
+                 values_to = "val_vr") %>% 
+    filter(!is.na(val_vr)) %>% 
+    mutate(lab_nm = substring(nm_vr, 2)) %>% 
+    rename(!!paste0(prefix, "_nm") := nm_vr,
+           !!paste0(prefix, "_val") := val_vr)
+}
+
+
 
 
 add_wbc_fxn <- function(ds){

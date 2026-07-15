@@ -25,7 +25,7 @@ if(set_resp == "Likely an internal run"){
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
-bargs <- getArgs(defaults = list(dt = "20260306"))
+bargs <- getArgs(defaults = list(dt = "20260606"))
 
 
 # check for whether qs2 objects already exist in this project's
@@ -1434,6 +1434,90 @@ t3labs_long <- piv_lab_form(formds_list$tier_3_labs, "t3lab", "tier_3_labs_compl
                                     .default = "Value")) %>%
   relocate(lab_nm_meaning, .after = "lab_nm")
 
+
+# Special Health Care Needs Form Code
+
+diag <- c("asthma", "diab", "seiz", "heart", "mig", "tics", "anxiety", "depress", "conduct", "delay", "speechdis", "learndis", "asd", "adhd", "ed")
+
+shcn_form <-  formds_list$special_health_care_needs_screener %>% 
+  mutate(
+    # branch-level status based on the decision tree in the plot:
+    # first check YES, then check NO, otherwise missing
+    meds_status = case_when(
+      hcn_medsyn == 1 & hcn_medscond == 1 & hcn_meds12m == 1 ~ "Yes",
+      hcn_medsyn == 0 ~ "No",
+      hcn_medsyn == 1 & hcn_medscond == 0 ~ "No",
+      hcn_medsyn == 1 & hcn_medscond == 1 & hcn_meds12m == 0 ~ "No",
+      TRUE ~ NA_character_
+    ),
+    serv_status = case_when(
+      hcn_servyn == 1 & hcn_servcond == 1 & hcn_serv12m == 1 ~ "Yes",
+      hcn_servyn == 0 ~ "No",
+      hcn_servyn == 1 & hcn_servcond == 0 ~ "No",
+      hcn_servyn == 1 & hcn_servcond == 1 & hcn_serv12m == 0 ~ "No",
+      TRUE ~ NA_character_
+    ),
+    limit_status = case_when(
+      hcn_limityn == 1 & hcn_limitcond == 1 & hcn_limit12m == 1 ~ "Yes",
+      hcn_limityn == 0 ~ "No",
+      hcn_limityn == 1 & hcn_limitcond == 0 ~ "No",
+      hcn_limityn == 1 & hcn_limitcond == 1 & hcn_limit12m == 0 ~ "No",
+      TRUE ~ NA_character_
+    ),
+    therapy_status = case_when(
+      hcn_therapyyn == 1 & hcn_therapycond == 1 & hcn_therapy12m == 1 ~ "Yes",
+      hcn_therapyyn == 0 ~ "No",
+      hcn_therapyyn == 1 & hcn_therapycond == 0 ~ "No",
+      hcn_therapyyn == 1 & hcn_therapycond == 1 & hcn_therapy12m == 0 ~ "No",
+      TRUE ~ NA_character_
+    ),
+    counsel_status = case_when(
+      hcn_counselyn == 1 & hcn_counsel12m == 1 ~ "Yes",
+      hcn_counselyn == 0 ~ "No",
+      hcn_counselyn == 1 & hcn_counsel12m == 0 ~ "No",
+      TRUE ~ NA_character_
+    ),
+    # overall screener:
+    # 1) if ANY branch is Yes -> Yes
+    # 2) else if ALL branches are No -> No
+    # 3) otherwise -> missing
+    hcn_screenycalc_wna = factor(case_when(if_any(c(meds_status, serv_status, limit_status, therapy_status, counsel_status),~ .x == "Yes") ~ "Yes",
+                                           if_all(c(meds_status, serv_status, limit_status, therapy_status, counsel_status),~ .x == "No") ~ "No",
+                                           TRUE ~ NA_character_), levels = c("Yes", "No")),
+    # dependency on prescription meds only
+    dep_bin = case_when(meds_status == "Yes" ~ 1,meds_status == "No" ~ 0,TRUE ~ NA_real_),
+    # functional limitations only
+    func_bin = case_when(limit_status == "Yes" ~ 1, limit_status == "No" ~ 0,TRUE ~ NA_real_),
+    # service use = medical/mental health/educational services OR therapy OR counseling
+    serv_bin = case_when(if_any(c(serv_status, therapy_status, counsel_status), ~ .x == "Yes") ~ 1,
+                         if_all(c(serv_status, therapy_status, counsel_status), ~ .x == "No") ~ 0,
+                         TRUE ~ NA_real_),
+    dep_f = ifelse(dep_bin == 1, "Dependency", ""),
+    serv_f = ifelse(serv_bin == 1, "Service use", ""),
+    func_f = ifelse(func_bin == 1, "Functional Limits", ""),
+    domain = factor(
+      case_when(is.na(dep_bin) | is.na(serv_bin) | is.na(func_bin) ~ NA_character_, #keep domain missing when any of dep/serv/func is missing
+                dep_bin + serv_bin + func_bin == 3 ~ paste0(dep_f, " & ", serv_f, " & ", func_f),
+                dep_bin + serv_bin + func_bin == 1 ~ paste0(dep_f, serv_f, func_f),
+                dep_bin + serv_bin == 2 ~ paste0(dep_f, " & ", serv_f),
+                dep_bin + func_bin == 2 ~ paste0(dep_f, " & ", func_f),
+                serv_bin + func_bin == 2 ~ paste0(serv_f, " & ", func_f)),
+      c("Dependency","Service use", "Functional Limits", "Dependency & Service use", "Dependency & Functional Limits",
+        "Service use & Functional Limits",   "Dependency & Service use & Functional Limits")),
+    across(glue("hcn_{diag}curr"),
+           \(x)factor(case_when(hcn_screenycalc_wna %in% NA ~ NA,
+                                hcn_screenycalc_wna %in% "No" ~ "No",
+                                cur_column() %in% "hcn_delaycurr" & get(all_of(gsub("curr", "yn", cur_column()))) %in% 1 ~ "Yes" ,
+                                get(all_of(gsub("curr", "yn", cur_column()))) %in% 0 ~ "No",
+                                get(all_of(gsub("curr", "yn", cur_column()))) %in% c(-1,-88, NA) ~ NA,
+                                x == 1 ~ "Yes",
+                                x == 0 ~ "No",
+                                x %in% c(-1,-88, NA) ~ NA),
+                      c("Yes", "No")),
+           .names = "{str_extract(.col, '(?<=_).*(?=curr)')}_combined"))
+
+
+
 # Creation of symp_ds_plist dataset -------------------------------------------------------------
 
 # additional datasets and functions required to create symp_ds_plist (brought over from ped_mkrenv.R
@@ -1754,7 +1838,7 @@ mk_ps_symp_df <- function(ds,    core_ds = core,    form_cs = formds_list$covid_
              (!grepl("RP253",    record_id) & arm_num == 4 & ((!is.na(ps_infected) & ps_infected == 1)| is.na(ps_infected) & infect_yn_f %in% "Infected") & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pilt") |
              (!grepl("RP253",    record_id) & ((!is.na(ps_infected) & ps_infected == 0)| is.na(ps_infected) & infect_yn_f %in% "Uninfected") & arm_num == 4 & redcap_event_name %in% c("baseline_arm_4") & vr_tm == "pnlt") |
              (!grepl("RP253",    record_id) & grepl("_arm_5$",    redcap_event_name) & vr_tm == "lt") |
-             (grepl("RP253",    record_id) & grepl("month",    redcap_event_name) & vr_tm == "musicul")) %>%
+             (grepl("RP253",    record_id) & vr_tm == "musicul")) %>%
     comb_select("final_")
   
   ds_now <- ds_base %>% 
@@ -2065,5 +2149,6 @@ lapply(ls(), function(obj){
     qs_save(eval(parse(text = paste0("`", obj, "`"))), file.path(dm_dir, paste0(obj, ".qs2")))
   }
 })
+
 
 
