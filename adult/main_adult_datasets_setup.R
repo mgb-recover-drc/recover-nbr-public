@@ -2,6 +2,8 @@
 
 start_tm <- Sys.time()
 
+date_run <- format(Sys.Date(), "%Y%m%d")
+
 # Script setup (paths, loading libraries/helper functions, etc.) ----
 
 # determines the path (relative to the current working directory or a specified path location) to the given folder name
@@ -31,8 +33,8 @@ source("helper_script.R")
 bargs <- getArgs(defaults = list(dt = "20260606", add_log=0))
 
 # check for whether qs2 objects already exist in this project's
-if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/adult/"), bargs$dt))) > 0)
-  stop(glue("qs2 objects already in existing project - delete qs2 files from project-files/DM/adult/{bargs$dt}"))
+if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/adult/"), bargs$dt, "_", {date_run}))) > 0)
+  stop(glue("qs2 objects already in existing project - delete qs2 files from project-files/DM/adult/{bargs$dt}_{date_run}"))
 
 # load all relevant RECOVER adult REDCap files 
 dm_rt_dt <- bargs$dt 
@@ -42,7 +44,7 @@ dm_rt_dt_m <- substr(dm_rt_dt, 5, 6)
 pf_loc <- get_folder_path(fld_str = "project-files") # project-files folder location (for current Seven Bridges environment)
 
 
-dm_dir <- glue("{gsub('project-files$', 'output-files', pf_loc)}/DM/adult/{dm_rt_dt}")
+dm_dir <- glue("{gsub('project-files$', 'output-files', pf_loc)}/DM/adult/{dm_rt_dt}_{date_run}")
 if(!file.exists(dm_dir)) dir.create(dm_dir, recursive = T)
 
 if(bargs$add_log == 1){
@@ -1241,7 +1243,7 @@ mat_symps <- ds_dd %>%
   filter(form.name == "pasc_symptoms") %>% 
   select(vr.name, matrix.group.name, field.label) %>% 
   filter(grepl("_main_", matrix.group.name)) %>% 
-  filter(str_detect(vr.name, paste(c('goofy', 'color', 'drymouth'), collapse="|")))%>% 
+  filter(str_detect(vr.name, paste(c('goofy', 'color', 'drymouth', 'dryeyes'), collapse="|")))%>%
   mutate(symp = gsub("_c[0-9]+", "", vr.name),
          vr.name = case_when(str_detect(vr.name ,"_c\\d") ~ paste0(vr.name, "___4"),
                              T ~ vr.name)) 
@@ -1256,7 +1258,7 @@ ps_mat <- formds_list$pasc_symptoms %>%
   select(record_id, redcap_event_name, ps_colldt, (unique(mat_symps$vr.name)))
 
 ps_compass <- formds_list$pasc_symptoms %>% 
-  select(record_id, redcap_event_name, ps_colldt, starts_with(mat_compass$vr.name)) 
+  select(record_id, redcap_event_name, ps_colldt, ps_fversion, ps_compass31_calc, starts_with(mat_compass$vr.name)) 
 
 addRowSum <- function(start.str, df){
   #start.str = "ps_mood"; df= ps_mat #
@@ -1271,45 +1273,53 @@ addRowSum <- function(start.str, df){
   return(new_df)
 }
 
-ortho <- c('ps_goofy', 'compass31_faintfreq', 'compass31_faintsev', 'compass31_fainttraj')
+
+ortho <- c('ps_goofy', 'compass31_faintfreq', 'compass31_faintsev', 'compass31_fainttraj', 'compass31fu_fainttraj')
 vaso <- c("ps_color", "compass31_colorloc", "compass31_colortraj")
-sec <- c("compass31_sweatyn", "compass31_dryeyesyn", "ps_drymouth", "compass31_drymouthtraj")
-gas <- c("compass31_fullrate", "compass31_bloated", "compass31_vomit", "compass31_cramp",
-         "compass31_diarryn", "compass31_diarrfreq", "compass31_diarrsev", "compass31_diarrtraj", "compass31_constyn", "compass31_constfreq", 
-         "compass31_constsev", "compass31_consttraj")
-blad <- c("compass31_controlbladder", "compass31_urinepass", "compass31_emptybladder" )
-pupil <- c("compass31_lightyn", "compass31_lightsev", "compass31_focusyn", 
-           "compass31_focussev", "compass31_vistraj" )
+sec <- c("compass31_sweatyn", "compass31fu_sweatyn", "dryeyes_versioned", "ps_drymouth", "compass31_drymouthtraj", "compass31_drymouthtrajv2")
+gas <- c("compass31_fullrate", "compass31fu_fullrate", "compass31_bloated", "compass31fu_bloated",
+          "compass31_vomit", "compass31fu_vomit", "compass31_cramp", "compass31fu_cramp",
+          "compass31_diarryn", "compass31fu_diarryn", "compass31_diarrfreq", "compass31_diarrsev", "compass31_diarrtraj",
+          "compass31_constyn", "compass31fu_constyn","compass31_constfreq", "compass31_constsev", "compass31_consttraj")
+blad <- c("compass31_controlbladder", "compass31fu_controlbladder", "compass31_urinepass", "compass31fu_urinepass",
+           "compass31_emptybladder", "compass31fu_emptybladder")
+pupil <- c("compass31_lightyn", "compass31fu_lightyn", "compass31_lightsev", "compass31_focusyn", "compass31fu_focusyn",
+            "compass31_focussev", "compass31_vistraj" )
 
 wt <- c("ortho_wt", "vaso_wt", "sec_wt", "gastro_wt", "bladder_wt", "pupil_wt")
 
-compass_df <- lapply(c("ps_goofy", "ps_color", "ps_drymouth"), addRowSum, df = ps_mat) %>% 
+compass_df <- lapply(c("ps_goofy", "ps_color", "ps_drymouth", "ps_dryeyes"), addRowSum, df = ps_mat) %>% 
   reduce(left_join, by = c("record_id", "redcap_event_name")) %>% 
-  left_join(ps_compass, by = c("record_id", "redcap_event_name")) %>% 
-  mutate(across(c(compass31_faintfreq, compass31_bloated, compass31_vomit, 
-                  compass31_cramp, compass31_diarrfreq, compass31_constfreq, compass31_controlbladder, 
-                  compass31_urinepass, compass31_emptybladder, compass31_lightyn, compass31_focusyn), 
-                \(x) x - 1),
-         across(c(compass31_fainttraj, compass31_colortraj, compass31_diarrtraj, compass31_consttraj), 
-                \(x) recode(x, `1` = 3, `2` = 2, `3` = 1, `4` = 0, `5` = 0, `6` = 0)),
-         across(c(compass31_sweatyn, compass31_vistraj), 
-                \(x) recode(x, `1` = 0, `2` = 3, `3` = 2, `4` = 1, `5` = 0, `6` = 0, `7` = 0)),
-         compass31_colorloc = psum(compass31_colorloc___1, compass31_colorloc___2),
-         compass31_sweatyn = recode(compass31_sweatyn, `1` = 1, `2` = 0, `3` = 0, `4` = 1, `5` = 2),
-         compass31_fullrate = recode(compass31_fullrate,`1` = 2, `2` = 1, `3` = 0, `4` = 0, `5` = 0),
-         ortho_sum = psum(!!!syms(ortho)),
-         ortho_wt = ortho_sum*4,
-         vaso_sum = psum(!!!syms(vaso)),
-         vaso_wt = vaso_sum*(5/6),
-         sec_sum = psum(!!!syms(sec)),
-         sec_wt = sec_sum*(15/7),
-         gastro_sum = psum(!!!syms(gas)),
-         gastro_wt = gastro_sum*(25/28),
-         bladder_sum = psum(!!!syms(blad)),
-         bladder_wt = bladder_sum*(10/9),
-         pupil_sum = psum(!!!syms(pupil)),
-         pupil_wt = pupil_sum*(1/3),
-         compass_score = psum(!!!syms(wt)))
+  left_join(ps_compass, by = c("record_id", "redcap_event_name")) %>%
+  mutate(across(c(compass31_faintfreq, compass31_bloated, compass31fu_bloated, 
+             compass31_vomit, compass31fu_vomit, compass31_cramp, compass31fu_cramp, 
+             compass31_diarrfreq, compass31_constfreq, compass31_controlbladder, compass31fu_controlbladder,
+             compass31_urinepass, compass31fu_urinepass, compass31_emptybladder, compass31fu_emptybladder,
+             compass31_lightyn, compass31fu_lightyn, compass31_focusyn, compass31fu_focusyn), 
+           \(x) x - 1),
+    across(c(compass31_fainttraj, compass31fu_fainttraj, compass31_colortraj, compass31_diarrtraj, compass31_consttraj), 
+           \(x) recode(x, `1` = 3, `2` = 2, `3` = 1, `4` = 0, `5` = 0, `6` = 0)),
+    across(c(compass31_drymouthtraj, compass31_drymouthtrajv2, compass31_vistraj),
+           \(x) recode(x, `1` = 0, `2` = 3, `3` = 2, `4` = 1, `5` = 0, `6` = 0, `7` = 0)),
+    compass31_colorloc = psum(compass31_colorloc___1, compass31_colorloc___2),
+    across(c(compass31_sweatyn, compass31fu_sweatyn), 
+           \(x) recode(x, `1` = 1, `2` = 0, `3` = 0, `4` = 1, `5` = 2)),
+    across(c(compass31_fullrate, compass31fu_fullrate),
+           \(x) recode(x,`1` = 2, `2` = 1, `3` = 0, `4` = 0, `5` = 0)),
+    dryeyes_versioned = ifelse(ps_fversion < 6, compass31_dryeyesyn, ps_dryeyes),
+    ortho_sum = psum(!!!syms(ortho)),
+    ortho_wt = ortho_sum*4,
+    vaso_sum = psum(!!!syms(vaso)),
+    vaso_wt = vaso_sum*(5/6),
+    sec_sum = psum(!!!syms(sec)),
+    sec_wt = sec_sum*(15/7),
+    gastro_sum = psum(!!!syms(gas)),
+    gastro_wt = gastro_sum*(25/28),
+    bladder_sum = psum(!!!syms(blad)),
+    bladder_wt = bladder_sum*(10/9),
+    pupil_sum = psum(!!!syms(pupil)),
+    pupil_wt = pupil_sum*(1/3),
+    compass_score = ifelse(ps_fversion >= 6 | (ps_fversion < 6 & ps_compass31_calc %in% 1), psum(!!!syms(wt)), NA))
 
 # Pheno Description:
 #' bind now variables from baseline and follow-up
@@ -1425,20 +1435,6 @@ ps_combined_pheno <- ps_now_list$wide %>%
          # promis_global06_yn = promis_global06 %in% c(1,2),
          # promis_global08_yn = promis_global08 %in% c(4,5),
          nqol_yn = NQOL_CF_Tscore <= 40,
-         dys_yn = compass_score > 20,
-         cp_sum = psum((ps_sob___now == "Yes" & mmrc_dyspnea >= 2), 
-                       ps_cough___now == "Yes", (ps_sleep___now == "Yes" & snore == 1), 
-                       ps_heart___now == "Yes", pain_chest___now == "Yes", 
-                       ps_swelllegs___now == "Yes"), 
-         musc_sum = psum(ps_weak___now == "Yes", pain_joint___now_sev == "Yes", 
-                         pain_muscle___now_sev == "Yes", 
-                         pain_back___now_sev == "Yes"), 
-         neuro_sum = psum(ps_think___now_sev == "Yes", ps_sense___now == "Yes", 
-                          ps_nerve___now == "Yes", pain_head___now_sev == "Yes", 
-                          gad7_total > 9, phq8_total > 9),
-         cp_yn = cp_sum >= 1 & promis12_yn,
-         musc_yn = musc_sum >= 1 & promis12_yn,
-         neuro_yn = neuro_sum >= 1 & promis12_yn,
          nosymps_yn = tl_symp_sum == 0) %>%
   mutate(across(ends_with("_yn"), ~ factor(.x, 
                                            levels = c("TRUE", "FALSE"), 

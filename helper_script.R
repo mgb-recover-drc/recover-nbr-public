@@ -87,11 +87,11 @@ dd_prep_col_nms <- function(ds_dd_initial) {
 
 # function that creates a named list of datasets, where each data set contains all the relevant variables from ds_fdata dataset for the current REDCap form
 get_cur_form_ds <- function(full_ds, dd, eventmap, peds_cohort_flag = F) {
-  
+
   all_variable_names <- names(full_ds)
   
   nlapply(unique(dd$form.name), function(cur_form) {
-    
+
     form_vrs <- dd %>% filter(form.name == cur_form, field.type %!in% c("notes")) %>% pull(vr.name)
     form_vrs_ms <- all_variable_names[unlist(lapply(form_vrs, function(x) grep("^___", gsub(x, "", all_variable_names))))]
     
@@ -218,7 +218,7 @@ cut_to_fum <- function(x, fct = F){
 #   - the modified (or not) column for this vrb
 conv_prop_type <- function(cur_vrb_col, vrb_name, dd=ds_dd, verbose = F) {
   # grab all the info from dd from this vrb_name
-  
+
   vrb_info <- dd %>% filter(vr.name == vrb_name)
   attr(cur_vrb_col, "label") <- vrb_info$field.label
   
@@ -279,7 +279,7 @@ qs_read1 <- function(ds, ...){
 }
 
 get_env_list <- function(coh, dt){
-  
+
   if(missing(coh)) stop("You must provide a cohort name")
   if(coh %in% "cong") coh <- "congenital"
   if(!(coh %in% c("adult", "ped", "congenital", "autopsy"))) stop("The first parameter needs to be one of adult, ped, congenital, or autopsy")
@@ -363,7 +363,7 @@ get_env_list <- function(coh, dt){
 }
 # getArgs function by Chris Wallace (user chr1swallace on GitHub)
 getArgs <- function(verbose = FALSE, defaults = NULL) {
-  
+
   myargs <- gsub("^--", "", commandArgs(TRUE))
   setopts <- !grepl("=", myargs)
   if(any(setopts))
@@ -477,31 +477,6 @@ mk_labs_comb_long <- function() {
   ds_out
 }
 
-this_year = lubridate::year(Sys.Date())
-
-fix_year <- function(x) {
-  num2 <- function(y) as.numeric(stri_sub(as.character(y), -2))
-  case_when(is.na(x) ~ as.numeric(NA),
-            num2(x) <= num2(this_year) & num2(x) >= 19 ~ 2000+num2(x))
-}
-
-fix_month = function(x) {
-  case_when(is.na(x) | is.na(as.numeric(x)) ~ as.numeric(NA),
-            as.numeric(x) >= 0 & as.numeric(x) <= 12 ~ as.numeric(x))
-}
-
-fix_yeardt <- function(ds, vr_pf){
-  dt_chr <- paste0(vr_pf, "_date")
-  ds %>% 
-    mutate(fixdtfxn_yr = fix_year(!!sym(paste0(vr_pf, "_dty"))),
-           fixdtfxn_mn = fix_month(!!sym(paste0(vr_pf, "_dtm"))),
-           fixdtfxn_chr = case_when(is.na(fixdtfxn_yr) ~ as.character(NA),
-                                    is.na(fixdtfxn_mn) ~ paste(fixdtfxn_yr, 6, 1, sep="-"),
-                                    .default = paste(fixdtfxn_yr, fixdtfxn_mn, 1, sep="-")),
-           !!dt_chr := as.Date(fixdtfxn_chr)) %>% 
-    select(-starts_with("fixdtfxn_"))
-  
-}
 
 piv_lab_form <- function(ds, prefix, comp_vr, prefix_gen= "lab", extra_piv_vrs=NULL){
   
@@ -513,7 +488,7 @@ piv_lab_form <- function(ds, prefix, comp_vr, prefix_gen= "lab", extra_piv_vrs=N
                  values_to = paste0(prefix, "_val")) %>% 
     filter(!is.na(!!sym(paste0(prefix, "_val")))) %>% 
     mutate(lab_nm = sub(paste0("^", prefix), prefix_gen, !!sym(paste0(prefix, "_nm")), perl = TRUE)) %>% 
-    filter(!(endsWith(lab_nm, "nn___1$") & !!sym(paste0(prefix, "_val")) == 0))
+    filter(!(endsWith(lab_nm, "nn___1") & !!sym(paste0(prefix, "_val")) == 0))
   
 }
 
@@ -568,7 +543,7 @@ flip_bin <- function(vr){
 # (https://www2.census.gov/geo/pdfs/maps-data/maps/reference/us_regdiv.pdf)
 
 zip_region_fxn <- function(ds, join_vr, db_loc, get_list=F, vr_ext=""){
-  
+
   state_to_region_mapping <- c(
     "CT"=      "Northeast: New England",
     "ME"=      "Northeast: New England",
@@ -662,3 +637,35 @@ zip_region_fxn <- function(ds, join_vr, db_loc, get_list=F, vr_ext=""){
       rename(all_of(ds_out_nms))
   }
 }
+
+
+infdt_valid <- function(infdt, dob){
+  infdt >= dob & infdt >= as.Date("2020-01-01") & infdt <= ymd(dm_rt_dt)
+}
+
+
+
+fix_year <- function(x) {
+  num2 <- function(y) as.numeric(stri_sub(as.character(y), -2))
+  case_when(is.na(x) ~ as.numeric(NA),
+            num2(x) <= num2(this_year) & num2(x) >= 19 ~ 2000+num2(x))
+}
+
+fix_month = function(x) {
+  case_when(is.na(x) | is.na(as.numeric(x)) ~ as.numeric(NA),
+            as.numeric(x) >= 0 & as.numeric(x) <= 12 ~ as.numeric(x))
+}
+
+fix_yeardt <- function(ds, vr_pf){
+  dt_chr <- paste0(vr_pf, "_date")
+  ds %>% 
+    mutate(fixdtfxn_yr = fix_year(!!sym(paste0(vr_pf, "_dty"))),
+           fixdtfxn_mn = fix_month(!!sym(paste0(vr_pf, "_dtm"))),
+           fixdtfxn_chr = case_when(is.na(fixdtfxn_yr) ~ as.character(NA),
+                                    is.na(fixdtfxn_mn) ~ paste(fixdtfxn_yr, 6, 1, sep="-"),
+                                    .default = paste(fixdtfxn_yr, fixdtfxn_mn, 1, sep="-")),
+           !!dt_chr := as.Date(fixdtfxn_chr)) %>% 
+    select(-starts_with("fixdtfxn_"))
+  
+}
+

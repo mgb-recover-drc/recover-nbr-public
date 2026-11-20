@@ -8,6 +8,45 @@ Code used for some RECOVER manuscript analyses will be made available in a "manu
 # Code updates 
 This code base is typically updated every three months, following a data release on Seven Bridges. Major changes from each update are described in this README.
 
+## November 20, 2026
+
+Files updated:
+1. main_adult_datasets_setup.R
+2. main_congenital_datasets_setup.R
+3. main_pediatric_datasets_setup.R
+4. main_autopsy_datastes_setup.R
+5. helper_script.R
+
+### Updates to main_adult_datasets_setup.R
+* Filter in mat_symps dataset updated to filter for ‘dryeyes’ in vr.name
+* ps_compass dataset updated to also select for ps_fversion and ps_compass31_calc
+* Variables were added to the following vectors: ortho, vaso, sec, gas, blad, pupil
+* Updates to compass_df:
+  * ps_dryeyes included in vector in which lapply is applied across 
+  * variables created in mutate statement in compass_df updated
+* The following variables were removed from ps_combined_pheno: dys_yn, cp_sum, musc_sum, neuro_sum, cp_yn, musc_yn, neuro_yn
+* Script will now always pull data from June 6, 2026 since data collection and edits were completed prior to this data release. Changed name of output folder for .qs2 objects to be “20260606_[date_run]”
+
+### Updates to main_congenital_datasets_setup.R
+* Dataset pregform_sex with variable preg_covidsex and dataset neoform_sex with variable ndo_sex were generated and added to core
+  * The biosex and biosex_f variables in core were updated to allow a non-missing value from either ndo_sex or preg_covidsex to populate biosex when the original biosex value is missing. 
+
+### Updates to main_pediatric_datasets_setup.R
+* The cutoff date in the omicron variable definition in core was updated to be “12-01-2021” 
+* The following variables were added or updated in core: fcih_date_valid, enrl_infdt_valid, mrcih_date_valid, earliest_valid_infdt, inf_date and which_date
+* The definition of inf_date was updated in ped_vacc_var and which_vaccine datasets to match the update definition in core
+* Moved this_year, fix_year, fix_month and fix_yeardt from helper script into this script
+
+### Updates to main_autopsy_datasets_setup.R
+* Autopsy setup script was created 
+* See Descriptions of main datasets for Autopsy.docx and Data Dictionary of added variables in autopsy core.xlsx for more information on the relevant datasets and variables created in this script
+
+### Updates to helper_script.R
+* Function piv_lab_form was updated so that a lab_nm matching the string “nn___1” is filtered for instead of “n___1$”
+* Function infdt_valid added to script. This function returns a logical vector if the infection date is on or after the participant’s date or birth, the infection date is on or after Jan 1, 2020 and the infection date if on or before dm_rt_dt. 
+* Moved this_year, fix_year, fix_month and fix_yeardt from helper script to main_pediatric_datasets_setup.R
+
+
 ## June 6, 2026
 
 Files updated:	

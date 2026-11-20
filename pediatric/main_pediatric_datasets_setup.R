@@ -25,8 +25,7 @@ if(set_resp == "Likely an internal run"){
 
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
-bargs <- getArgs(defaults = list(dt = "20260606"))
-
+bargs <- getArgs(defaults = list(dt = "20260906"))
 
 # check for whether qs2 objects already exist in this project's
 if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/ped/"), bargs$dt))) > 0) 
@@ -37,9 +36,11 @@ dm_rt_dt <- bargs$dt
 dm_rt_dt_y <- substr(dm_rt_dt, 1, 4)
 dm_rt_dt_m <- substr(dm_rt_dt, 5, 6)
 
+this_year = lubridate::year(lubridate::ymd(dm_rt_dt))
+
 pf_loc <- get_folder_path(fld_str = "project-files") # project-files folder location (for current Seven Bridges environment)
-data_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricMain_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricMain_REDCap_{dm_rt_dt}")
-data_loc_cg_partial <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricCaregiver_{dm_rt_dt_y}{dm_rt_dt_m}.1/")
+data_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}{dm_rt_dt_m}.2/RECOVERPediatricMain_{dm_rt_dt_y}{dm_rt_dt_m}.2/RECOVERPediatricMain_REDCap_{dm_rt_dt}")
+data_loc_cg_partial <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}{dm_rt_dt_m}.2/RECOVERPediatricCaregiver_{dm_rt_dt_y}{dm_rt_dt_m}.2/")
 data_loc_cg_final_fol <- grep("PediatricCaregiver_REDCap", list.files(data_loc_cg_partial), value = T)
 data_loc_cg <- glue("{data_loc_cg_partial}{data_loc_cg_final_fol}")
 
@@ -898,26 +899,20 @@ which_vaccine <- core_base %>%
   mutate(across(matches("vacc_dt_\\d"), \(x) case_when(!is.na(x) ~ x), .names = "{col}_imp")) %>%
   rows_patch(vacc_estdt_wide,
              by = "record_id") %>%
+  # Collapse all baseline inf dates into earliest valid inf date
+  mutate(across(c(fcih_date, enrl_infdt, mrcih_date), \(x) if_else(infdt_valid(x, dob = enrl_dob), x, NA), .names = "{.col}_valid"),
+         earliest_valid_infdt = pmin(fcih_date_valid, enrl_infdt_valid, mrcih_date_valid, na.rm=T)) %>%
   mutate(arm_num = case_when(enrl_arms %in% c("12", "1,2") ~ 2,
                              enrl_arms %in% c("14", "1,4") ~ 4,
                              T ~ as.numeric(NA)),
          acute_yn_f =  factor(arm_num, c(2,4), c("Acute", "Post-Acute")),
          infect_yn_f = factor(enrl_infyn, 1:0, c("Infected", "Uninfected")),
-         inf_date = case_when(fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
-                              #sometimes people have improbable vlaues for both enrl_inf_dt andd fcih_date
-                              fcih_date %in% NA & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
-                              #fix those w only improbable enrl_inftdr values
-                              fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt %!in% NA & enrl_infdt >= "2020-01-01"~ enrl_infdt,
-                              #many fcih values are very early and unlikely, switching to more likely value.
-                              fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt %in% NA~ as.Date("2020-01-01"),
-                              #IF fcih date is wildly ridiclous but missing enrl_infdt, its 2020-1-1
-                              fcih_date %!in% NA & acute_yn_f == "Post-Acute" ~ fcih_date,
-                              #if 1st inf missing but mrcih exsist then only 1 infection
-                              fcih_date %in% NA & mrcih_date %!in% NA & acute_yn_f == "Acute" ~ mrcih_date,
-                              #if 1st inf not missing then reinfected
-                              fcih_date %!in% NA & acute_yn_f == "Acute" ~ fcih_date,
-                              infect_yn_f == "Infected" ~ enrl_infdt,
-                              T ~ NA),
+         inf_date = case_when(# If no infection dates were reported at baseline, then inf_date is NA
+           is.na(fcih_date) & is.na(enrl_infdt) & is.na(mrcih_date) ~ NA,
+           # If there are some non-missing infection dates from baseline, then inf_date is the min of all valid infection dates
+           !is.na(fcih_date_valid) | !is.na(enrl_infdt_valid) | !is.na(mrcih_date_valid) ~ earliest_valid_infdt,
+           # If there are some non-missing infection dates from baseline but they are all invalid, then inf_date is the latest of DOB and 2020-01-01
+           .default = max(enrl_dob, as.Date("2020-01-01"))),
          index_date = case_when(infect_yn_f %in% "Uninfected" ~ enrl_dt,
                                 T ~ inf_date),
          age_enroll = round(as.numeric(enrl_dt - enrl_dob)/365.25, digits = 2),
@@ -1000,27 +995,21 @@ ped_vacc_var <- core_base %>%
   rows_patch(vacc_estdt_wide, 
              by = "record_id") %>%
   left_join(which_vaccine, by = "record_id") %>%
+  # Collapse all baseline inf dates into earliest valid inf date
+  mutate(across(c(fcih_date, enrl_infdt, mrcih_date), \(x) if_else(infdt_valid(x, dob = enrl_dob), x, NA), .names = "{.col}_valid"),
+         earliest_valid_infdt = pmin(fcih_date_valid, enrl_infdt_valid, mrcih_date_valid, na.rm=T)) %>%
   mutate(age_enroll = round(as.numeric(enrl_dt - enrl_dob)/365.25, digits = 2), 
          arm_num = case_when(enrl_arms %in% c("12", "1,2") ~ 2,
                              enrl_arms %in% c("14", "1,4") ~ 4,
                              T ~ as.numeric(NA)), 
          acute_yn_f =  factor(arm_num, c(2,4), c("Acute", "Post-Acute")),
          infect_yn_f = factor(enrl_infyn, 1:0, c("Infected", "Uninfected")),
-         inf_date = case_when(fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
-                              #sometimes people have improbable vlaues for both enrl_inf_dt andd fcih_date
-                              fcih_date %in% NA & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
-                              #fix those w only improbable enrl_inftdr values
-                              fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt %!in% NA & enrl_infdt >= "2020-01-01"~ enrl_infdt,
-                              #many fcih values are very early and unlikely, switching to more likely value.
-                              fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt %in% NA~ as.Date("2020-01-01"),
-                              #IF fcih date is wildly ridiclous but missing enrl_infdt, its 2020-1-1
-                              fcih_date %!in% NA & acute_yn_f == "Post-Acute" ~ fcih_date,
-                              #if 1st inf missing but mrcih exsist then only 1 infection
-                              fcih_date %in% NA & mrcih_date %!in% NA & acute_yn_f == "Acute" ~ mrcih_date,
-                              #if 1st inf not missing then reinfected
-                              fcih_date %!in% NA & acute_yn_f == "Acute" ~ fcih_date,
-                              infect_yn_f == "Infected" ~ enrl_infdt,
-                              T ~ NA), 
+         inf_date = case_when(# If no infection dates were reported at baseline, then inf_date is NA
+           is.na(fcih_date) & is.na(enrl_infdt) & is.na(mrcih_date) ~ NA,
+           # If there are some non-missing infection dates from baseline, then inf_date is the min of all valid infection dates
+           !is.na(fcih_date_valid) | !is.na(enrl_infdt_valid) | !is.na(mrcih_date_valid) ~ earliest_valid_infdt,
+           # If there are some non-missing infection dates from baseline but they are all invalid, then inf_date is the latest of DOB and 2020-01-01
+           .default = max(enrl_dob, as.Date("2020-01-01"))),
          index_date = case_when(infect_yn_f %in% "Uninfected" ~ enrl_dt, 
                                 T ~ inf_date),
          age_ref = case_when(infect_yn_f == "Uninfected" ~ age_enroll,
@@ -1070,8 +1059,8 @@ ped_vacc_var <- core_base %>%
                                    vacc_enrl_status %in% c("Not vaccinated")~"Not vaccinated at index",
                                    #vacc_enrl_status %in% "Vaccinated but missing information"~NA
   ))
-
-
+  
+  
 
 
 # add additional variables to core
@@ -1095,6 +1084,9 @@ core <- core_base %>%
   which_ms(ms_vrb_name = "demo_race", new_column_name = "race_cat", afmt_list = peds_afmts) %>%
   which_ms(ms_vrb_name = "demo_race", new_column_name = "race_cat_c6", afmt_list = peds_afmts,
            labs_rm = c("I dont know", "I do not want to answer")) %>%
+  # Collapse all baseline inf dates into earliest valid inf date
+  mutate(across(c(fcih_date, enrl_infdt, mrcih_date), \(x) if_else(infdt_valid(x, dob = enrl_dob), x, NA), .names = "{.col}_valid"),
+         earliest_valid_infdt = pmin(fcih_date_valid, enrl_infdt_valid, mrcih_date_valid, na.rm=T)) %>%
   mutate(across(c(enrl_infdt, enrl_dob, enrl_dt),  ymd),
          enrolled = (enrl_consyn %in% 1) & !is.na(enrl_dt) & !startsWith(site, "S"),
          study_grp =  case_when(
@@ -1138,35 +1130,25 @@ core <- core_base %>%
          vacc_yn_f = factor(vacc_yn, 0:1, c("Not Vaccinated", "Vaccinated")),
          ptf_promote_ag = (ptf_promote %in% 1 & ptf_agreed %!in% 0) | ptf_agreed %in% 1,
          arm_num_fu = ifelse(ptf_promote_ag, 5, NA),
-         #oldest recorded inf_dt
-         inf_date = case_when(fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
-                              #sometimes people have improbable vlaues for both enrl_inf_dt andd fcih_date
-                              fcih_date %in% NA & acute_yn_f == "Post-Acute" & enrl_infdt < "2020-01-01" ~ as.Date("2020-01-01"),
-                              #fix those w only improbable enrl_inftdr values
-                              fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt %!in% NA & enrl_infdt >= "2020-01-01"~ enrl_infdt,
-                              #many fcih values are very early and unlikely, switching to more likely value.
-                              fcih_date < "2020-01-01" & acute_yn_f == "Post-Acute" & enrl_infdt %in% NA~ as.Date("2020-01-01"),
-                              #IF fcih date is wildly ridiclous but missing enrl_infdt, its 2020-1-1
-                              fcih_date %!in% NA & acute_yn_f == "Post-Acute" ~ fcih_date,
-                              #if 1st inf missing but mrcih exsist then only 1 infection
-                              fcih_date %in% NA & mrcih_date %!in% NA & acute_yn_f == "Acute" ~ mrcih_date,
-                              #if 1st inf not missing then reinfected
-                              fcih_date %!in% NA & acute_yn_f == "Acute" ~ fcih_date,
-                              infect_yn_f == "Infected" ~ enrl_infdt,
-                              T ~ NA),
+         inf_date = case_when(# If no infection dates were reported at baseline, then inf_date is NA
+           is.na(fcih_date) & is.na(enrl_infdt) & is.na(mrcih_date) ~ NA,
+           # If there are some non-missing infection dates from baseline, then inf_date is the min of all valid infection dates
+           !is.na(fcih_date_valid) | !is.na(enrl_infdt_valid) | !is.na(mrcih_date_valid) ~ earliest_valid_infdt,
+           # If there are some non-missing infection dates from baseline but they are all invalid, then inf_date is the latest of DOB and 2020-01-01
+           .default = max(enrl_dob, as.Date("2020-01-01"))),
          index_date = case_when(infect_yn_f %in% "Uninfected" ~ enrl_dt,
                                 T ~ inf_date),
          which_date = case_when(infect_yn_f %in% "Uninfected" ~ "enrl_dt",
-                                fcih_date %!in% NA & acute_yn_f == "Post-Acute" ~ "fcih_date", 
-                                #if 1st inf missing but mrcih exsist then only 1 infection 
-                                fcih_date %in% NA & mrcih_date %!in% NA & acute_yn_f == "Acute" ~ "mrcih_date", 
-                                #if 1st inf not missing then reinfected
-                                fcih_date %!in% NA & acute_yn_f == "Acute" ~ "fcih_date", 
-                                infect_yn_f == "Infected" ~ "enrl_infdt",
-                                T ~ NA),
+                                is.na(fcih_date) & is.na(enrl_infdt) & is.na(mrcih_date) ~ NA,
+                                inf_date == fcih_date ~ "fcih_date",
+                                inf_date == enrl_infdt ~ "enrl_infdt",
+                                inf_date == mrcih_date ~ "mrcih_date",
+                                is.na(enrl_dob) ~ NA,
+                                max(enrl_dob, as.Date("2020-01-01")) == enrl_dob ~ "enrl_dob",
+                                .default = "2020-01-01"), 
          #Wave of Omicron or not:
-         omicron = case_when(index_date >= as.Date("2021-12-20") ~ 1,
-                             index_date < as.Date("2021-12-20") ~ 0),
+         omicron = case_when(index_date >= as.Date("2021-12-01") ~ 1,
+                             index_date < as.Date("2021-12-01") ~ 0),
          reinf_ac = case_when(acute_yn_f == "Acute" & inf_date %!in% NA & fcih_date %in% NA ~ "1st Inf",
                               acute_yn_f == "Acute" & mrcih_date %!in% NA & fcih_date %!in% NA ~ "Reinf",
                               T ~ NA),
@@ -1329,8 +1311,8 @@ if (file.exists(zip_code_db_dir)) {
                                  & inc_max >= fpl_120 ~"Below 120% FPL or income within range",
                                  inc_min <= fpl_120 & is.na(inc_max)~"Below 120% FPL or income within range"))
 }
-
-
+  
+  
 
 # Labs datasets creation
 
@@ -1918,7 +1900,7 @@ cutoff_df <- data.frame(cutoff=c(4,3,5.5, 5),
 ####Note: Currently, we only have a PASC definition for certain age groups.
 #### We are unable to ascertain pasc status for other age groups.
 peds_pasc_fxn <- function(long_df,    scores=score_tab,    cutoff=cutoff_df,    lasso_ans="lasso_answer"){
-  
+
   symp_cents_ud <- tribble(
     ~cluster ,    ~age_strata                     ,    ~ps_fever ,    ~ps_tired ,    ~ps_insomnia ,    ~ps_tiredwalk ,    ~ps_sweat ,    ~ps_hotcold ,    ~ps_lowapp ,    ~ps_highapp ,    ~ps_thirsty ,    ~ps_weightloss ,    ~ps_weightgain ,    ~ps_heightloss ,    ~ps_eye ,    ~ps_dryeyes ,    ~ps_eyebags ,    ~ps_vision ,    ~ps_lighthurts ,    ~ps_hearing ,    ~ps_tinnitus ,    ~ps_runnynose ,    ~ps_senses ,    ~ps_drymouth ,    ~ps_throat ,    ~ps_lostvoice ,    ~ps_swallowing ,    ~ps_teeth ,    ~ps_chapped ,    ~ps_drycough ,    ~ps_wetcough ,    ~ps_barkcough ,    ~ps_breathing ,    ~ps_painbreath ,    ~ps_painchest ,    ~ps_palprest ,    ~ps_palpexer ,    ~ps_lightheaded ,    ~ps_movement ,    ~ps_cramp ,    ~ps_nauseous ,    ~ps_diarrhea ,    ~ps_constipation ,    ~ps_painurine ,    ~ps_excesspee ,    ~ps_skin ,    ~ps_nails ,    ~ps_hair ,    ~ps_skincolor ,    ~ps_digitcolor ,    ~ps_muscle ,    ~ps_bodypain ,    ~ps_backneckpain ,    ~ps_headache ,    ~ps_shaky ,    ~ps_tingly ,    ~ps_cantmove ,    ~ps_brainfog ,    ~ps_talking ,    ~ps_sad ,    ~ps_anxious ,    ~ps_phobia ,    ~ps_fearpeople ,    ~ps_fearcrowd ,    ~ps_panicattack ,    ~ps_refuseschool ,    ~ps_nightmares ,    ~ps_hallucinate ,    ~ps_rocking ,    ~ps_hyperactive ,    ~ps_rulebreak ,    ~ps_liesteal ,    ~ps_repeatmem ,   
     1        ,    "Ages 12 - 17 (Adolescence)"    ,    0.1205    ,    0.9699    ,    0.5964       ,    0.6506        ,    0.2952    ,    0.4518      ,    0.4759     ,    0.1265      ,    0.2470      ,    0.1988         ,    0.1205         ,    0.0482         ,    0.2108  ,    0.1024      ,    0.3133      ,    0.2349     ,    0.4217         ,    0.0482      ,    0.2169       ,    0.2892        ,    0.2952     ,    0.1205       ,    0.2349     ,    0.0843        ,    0.0964         ,    0.0602    ,    0.2470      ,    0.2410       ,    0.1566       ,    0.0964        ,    0.2892        ,    0.1807         ,    0.3434        ,    0.4819       ,    0.5120       ,    0.9398          ,    0.3976       ,    0.4518    ,    0.5542       ,    0.2289       ,    0.2651           ,    0.0120        ,    0.0663        ,    0.2169   ,    0.0602    ,    0.1446   ,    0.0843        ,    0.0723         ,    0.4940     ,    0.7831       ,    0.6145           ,    0.8614       ,    0.2952    ,    0.3434     ,    0.0482       ,    0.7229       ,    0.1325      ,    0.4699  ,    0.6446      ,    0.2590     ,    0.1867         ,    0.3434        ,    0.3614          ,    0.2108           ,    0.1988         ,    0.0783          ,    0.0542      ,    0.0301          ,    0.1024        ,    0.0482       ,    0.1446        ,   
