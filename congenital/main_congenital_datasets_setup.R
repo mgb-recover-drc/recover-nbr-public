@@ -25,7 +25,7 @@ if(set_resp == "Likely an internal run"){
 # importing packages, defining helper functions/datasets, etc.
 source("helper_script.R")
 
-bargs <- getArgs(defaults = list(dt = "20260606"))
+bargs <- getArgs(defaults = list(dt = "20260906"))
 
 # check for whether qs2 objects already exist in this project's
 if(length(list.files(paste0(paste0(sbgenomics_path, "/project-files/DM/congenital/"), bargs$dt))) > 0)
@@ -37,7 +37,7 @@ dm_rt_dt_y <- substr(dm_rt_dt, 1, 4)
 dm_rt_dt_m <- substr(dm_rt_dt, 5, 6)
 
 pf_loc <- get_folder_path(fld_str = "project-files") # project-files folder location (for current Seven Bridges environment)
-data_folder_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}{dm_rt_dt_m}.1/RECOVERPediatricCongenital_{dm_rt_dt_y}{dm_rt_dt_m}.1")
+data_folder_loc <- glue("{pf_loc}/RECOVERPediatric_Data_{dm_rt_dt_y}{dm_rt_dt_m}.2/RECOVERPediatricCongenital_{dm_rt_dt_y}{dm_rt_dt_m}.2")
 lowest_foldr_nm <- grep("PediatricCongenital_REDCap_", list.files(data_folder_loc), value = T)
 data_loc <- glue("{data_folder_loc}/{lowest_foldr_nm}/")
 
@@ -66,6 +66,7 @@ core_adult_full <- adult_env_list$core_adult_full()
 adult_formds_list_pregnancy <- adult_env_list$formds_list_pregnancy_rdsfxnobjhlpr()
 adult_formds_list_pregnancy_followup <- adult_env_list$formds_list_pregnancy_followup_rdsfxnobjhlpr()
 adult_formds_list_adult_delivery_and_outcome_form <- adult_env_list$formds_list_adult_delivery_and_outcome_form_rdsfxnobjhlpr()
+adult_formds_list_adult_neonatal_delivery_and_outcome_form <- adult_env_list$formds_list_neonatal_delivery_and_outcome_form_rdsfxnobjhlpr()
 
 # formds_list: a list of datasets where each one corresponds to all the data in REDCap for a specific form (across all instances)
 formds_list <- get_cur_form_ds(ds_fdata, ds_dd, all_rc_forms_event_map)
@@ -124,6 +125,29 @@ fact_fact01n <- function(x, keep, lbl){
     factor(1:0, c(lbl, "XXXNOTXXX"))
 }
 
+pregform_sex <- adult_formds_list_pregnancy %>%
+  select(record_id, starts_with("preg_covidsex"), preg_coviddob) %>%
+  pivot_longer(cols = starts_with("preg_covidsex"),
+               names_to = "child_order",
+               names_prefix = "preg_covidsex_",
+               values_to = "preg_covidsex") %>%
+  filter(!is.na(preg_covidsex)) %>%
+  group_by(record_id) %>%
+  filter(n_distinct(preg_covidsex) == 1) %>%
+  distinct(record_id, preg_covidsex) %>%
+  mutate(preg_covidsex = case_when(
+    preg_covidsex == 1 ~ 0,
+    preg_covidsex == 2 ~ 1,
+    preg_covidsex == 3 ~ 2))
+
+neoform_sex <- adult_formds_list_adult_neonatal_delivery_and_outcome_form %>%
+  group_by(record_id) %>%
+  filter(n_distinct(ndo_sex) == 1) %>%
+  ungroup() %>%
+  distinct(record_id, ndo_sex)
+
+
+
 # finally define full core
 core <- core_initial %>% 
   which_ms(ms_vrb_name = "demo_race", new_column_name = "demo_race_rc", afmt_list = cong_afmts) %>% 
@@ -134,6 +158,8 @@ core <- core_initial %>%
               filter(!na_or_blank(visit_agemoreal)) %>% 
               filter(row_number() == 1, .by = record_id), 
             by = join_by(record_id)) %>%
+  left_join(pregform_sex, by = c("enrl_cgid" = "record_id")) %>% 
+  left_join(neoform_sex, by = c("enrl_cgid" = "record_id")) %>% 
   mutate(enrolled = (enrl_consyn %in% 1) & (tolower(substr(record_id, 4, 4)) != "s"), 
          study_grpp = factor(case_when(
            is.na(enrl_cgcovidpreg) ~ study_grp_levs["PE"],
@@ -142,13 +168,20 @@ core <- core_initial %>%
          study_grp = factor(enrl_cgcovidpreg, 1:0, c(study_grp_levs["CE"], study_grp_levs["NE"])), 
          biosex_f = cong_afmts$biosex(biosex),
          enrl_cgid = toupper(enrl_cgid),
-         enrl_reftype_f = cong_afmts$enrl_reftype(enrl_reftype)) %>% 
+         enrl_reftype_f = cong_afmts$enrl_reftype(enrl_reftype),
+         biosex = ifelse(is.na(biosex), coalesce(ndo_sex, preg_covidsex), biosex),
+         biosex_f = factor(case_when(
+           biosex == 0 ~ "Male",
+           biosex == 1 ~ "Female",
+           T ~ as.character(NA)
+         ), levels = c("Male","Female"))) %>% 
   left_join(core_adult_full, by = "enrl_cgid") %>%
   mutate(across(has_parent, \(x) replace_na(x, F)), #include these first 5
          pvacc_at_preg = factor(parent_first_vacc_dt < demo_dob, c(T, F), c("Yes", "No")),
          pvacc_at_pregd = fact_fact01n(pvacc_at_preg, "Yes", "Parent Vaccinated"),
          days_pinf_dob = as.numeric(demo_dob - parent_infdt),
          days_pinf_dob_cut = cut(days_pinf_dob/30.4, seq(0, 48), include.lowest = T))
+
 
 # gea_inf and trimester at infection variables code --
 preg <- adult_formds_list_pregnancy %>%
